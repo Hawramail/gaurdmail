@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head><title>Authorizing...</title></head>
+<body>
+<script>
+  // Grab token from hash
+  const hash = window.location.hash.substring(1);
+  const params = new URLSearchParams(hash);
+  const token = params.get("access_token");
+
+  if (token) {
+    localStorage.setItem("zoho_access_token", token);
+    localStorage.setItem("zoho_token_saved_at", Date.now().toString());
+    document.write("<h2 style='font-family:sans-serif;text-align:center;margin-top:100px'>✅ You are authorized to send Mails. You can close this tab.</h2>");
+  } else {
+    document.write("<h2 style='font-family:sans-serif;text-align:center;margin-top:100px'>❌ Authorization failed. Please try again.</h2>");
+  }
+</script>
+</body>
+</html>
