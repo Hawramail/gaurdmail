@@ -1,22 +1,3 @@
-/**
- * useSiem.js
- * Vue 3 composable — real-time SIEM data via Firebase onSnapshot
- *
- * Place at: src/composables/useSiem.js
- *
- * Provides:
- *   events         — live security_events feed (newest first, max 100)
- *   alerts         — live alerts feed
- *   openAlerts     — computed: only status === 'open'
- *   stats          — email count, upload count, anomaly count
- *   chartData      — vue-chartjs Line dataset (events per hour, last 12h)
- *   feedFilter     — ref: 'all' | 'critical' | 'high' | 'medium' | 'low'
- *   filteredEvents — computed: events filtered by feedFilter
- *   acknowledgeAlert(alert)
- *   resolveAlert(alert)
- *   logEvent(eventType, userId, metadata, severity)  ← call from anywhere
- */
-
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import {
   collection,
@@ -27,25 +8,37 @@ import {
   where,
   updateDoc,
   addDoc,
+  getDocs,
+  deleteDoc,
   doc,
   serverTimestamp,
 } from 'firebase/firestore'
 import { db } from 'src/firebase/config'
-import { api } from 'boot/axios' // adjust if your axios boot path differs
+import { simulationScenarios } from 'src/data/siemSimulation'
+
+// ── Standalone export — call from any component without subscribing ──────────
+export async function logSiemEvent (eventType, userId, metadata = {}, severity = 'low') {
+  await addDoc(collection(db, 'security_events'), {
+    eventType,
+    userId,
+    metadata,
+    severity,
+    anomalyRuleTriggered: null,
+    timestamp: serverTimestamp(),
+  })
+}
+
+// ── Helper ────────────────────────────────────────────────────────────────────
+function isToday (ms) {
+  if (!ms) return false
+  return new Date(ms).toDateString() === new Date().toDateString()
+}
 
 export function useSiem () {
   // ── Reactive state ─────────────────────────────────────────────────────────
   const events     = ref([])
   const alerts     = ref([])
   const feedFilter = ref('all')
-  const stats      = ref({
-    emailsSent:      0,
-    emailsSentDelta: '—',
-    fileUploads:     0,
-    fileUploadsSub:  '—',
-    anomalies:       0,
-    anomaliesSub:    '—',
-  })
 
   let eventsUnsub = null
   let alertsUnsub = null
@@ -63,6 +56,18 @@ export function useSiem () {
   })
 
   const openAlerts = computed(() => alerts.value.filter(a => a.status === 'open'))
+
+  const stats = computed(() => {
+    const todayEvents = events.value.filter(e => isToday(e._rawMs))
+    return {
+      emailsSent:      todayEvents.filter(e => e.eventType === 'EMAIL_SENT').length,
+      emailsSentDelta: 'Today',
+      fileUploads:     todayEvents.filter(e => e.eventType === 'FILE_UPLOAD').length,
+      fileUploadsSub:  'Today',
+      anomalies:       events.value.filter(e => e.anomalyRuleTriggered).length,
+      anomaliesSub:    'Total flagged',
+    }
+  })
 
   // ── Chart data — events per hour for last 12 hours ─────────────────────────
   const chartData = computed(() => {
@@ -118,7 +123,7 @@ export function useSiem () {
 
     eventsUnsub = onSnapshot(q, snap => {
       events.value = snap.docs.map(d => {
-        const data = d.data()
+        const data   = d.data()
         const tsDate = data.timestamp?.toDate?.()
 
         return {
@@ -158,65 +163,46 @@ export function useSiem () {
     })
   }
 
-  // ── Stats (from Laravel API) ───────────────────────────────────────────────
-  async function loadStats () {
-    try {
-      const res  = await api.get('/siem/stats')
-      stats.value = res.data
-    } catch (e) {
-      console.error('[useSiem] Failed to load stats:', e)
-    }
-  }
-
-  // ── Alert actions ──────────────────────────────────────────────────────────
+  // ── Alert actions — direct Firestore writes ────────────────────────────────
   async function acknowledgeAlert (alert) {
-    await api.patch(`/siem/alerts/${alert.id}/acknowledge`)
-    // onSnapshot will update the local state automatically
+    await updateDoc(doc(db, 'alerts', alert.id), { status: 'acknowledged' })
   }
 
   async function resolveAlert (alert) {
-    await api.patch(`/siem/alerts/${alert.id}/resolve`)
+    await updateDoc(doc(db, 'alerts', alert.id), {
+      status:     'resolved',
+      resolvedAt: serverTimestamp(),
+    })
+    // Audit trail — the SIEM logs its own resolution
+    await addDoc(collection(db, 'security_events'), {
+      eventType:            'ALERT_RESOLVED',
+      userId:               'staff_user',
+      severity:             'low',
+      metadata:             { alertRule: alert.rule, alertId: alert.id },
+      anomalyRuleTriggered: null,
+      timestamp:            serverTimestamp(),
+    })
   }
 
-  // ── Event logger (call from anywhere in the app) ──────────────────────────
+  // ── Event logger ──────────────────────────────────────────────────────────
   async function logEvent (eventType, userId, metadata = {}, severity = 'low') {
-    try {
-      await api.post('/siem/events', { eventType, userId, metadata, severity })
-    } catch (e) {
-      // Fallback: write directly to Firestore if Laravel is unreachable
-      await addDoc(collection(db, 'security_events'), {
-        eventType, userId, metadata, severity,
-        anomalyRuleTriggered: null,
-        timestamp: serverTimestamp(),
-      })
-    }
+    await logSiemEvent(eventType, userId, metadata, severity)
   }
 
-  // ── Simulation helper ──────────────────────────────────────────────────────
-  const simulatedEvents = [
-    { eventType: 'EMAIL_SENT',           userId: 'sim-user',    metadata: { count: 11, message: 'Burst email #11' },                     severity: 'critical', rule: 'email_burst' },
-    { eventType: 'FILE_REJECTED',        userId: 'unknown.user',metadata: { filename: 'payload.exe', reason: 'exe disguised as PDF' },   severity: 'critical', rule: 'repeated_file_rejections' },
-    { eventType: 'ADMIN_CONFIG_CHANGED', userId: 'unknown.user',metadata: { field: 'TO address', company: 'GIG Gulf' },                  severity: 'high',     rule: 'admin_config_tampering' },
-    { eventType: 'EMAIL_SENT',           userId: 'sim-user',    metadata: { message: 'Email at 02:34 AM' },                              severity: 'high',     rule: 'unusual_send_time' },
-    { eventType: 'ZOHO_TOKEN_FAILURE',   userId: 'system',      metadata: { attempts: 3, message: '3 consecutive failures' },            severity: 'medium',   rule: 'zoho_token_failure_spike' },
-    { eventType: 'FILE_UPLOAD',          userId: 'staff.user',  metadata: { filename: 'large_pack.pdf', sizeBytes: 14500000, sizeMB: 13.8, message: '13.8 MB upload' }, severity: 'medium', rule: 'large_file_upload' },
-  ]
-
+  // ── Simulation ────────────────────────────────────────────────────────────
   async function runSimulation () {
-    for (const ev of simulatedEvents) {
+    for (const ev of simulationScenarios) {
       await new Promise(r => setTimeout(r, 500))
 
-      // Write event directly to Firestore so onSnapshot fires immediately
       await addDoc(collection(db, 'security_events'), {
         eventType:            ev.eventType,
         userId:               ev.userId,
         metadata:             ev.metadata,
         severity:             ev.severity,
-        anomalyRuleTriggered: ev.rule,
+        anomalyRuleTriggered: ev.rule,   // non-null marks this as a demo event
         timestamp:            serverTimestamp(),
       })
 
-      // Also create an alert for high/critical
       if (ev.severity === 'critical' || ev.severity === 'high') {
         await addDoc(collection(db, 'alerts'), {
           rule:        ev.rule,
@@ -225,20 +211,43 @@ export function useSiem () {
           userId:      ev.userId,
           metadata:    ev.metadata,
           status:      'open',
+          _demo:       true,              // marks this as a demo alert
           timestamp:   serverTimestamp(),
         })
       }
-
-      // Bump anomaly counter in stats
-      stats.value.anomalies++
     }
+  }
+
+  // Delete only demo events (anomalyRuleTriggered !== null) and all alerts.
+  // Real events (anomalyRuleTriggered: null) are preserved.
+  async function clearSimData () {
+    const [eventsSnap, alertsSnap] = await Promise.all([
+      getDocs(query(collection(db, 'security_events'), where('anomalyRuleTriggered', '!=', null))),
+      getDocs(collection(db, 'alerts')),
+    ])
+    await Promise.all([
+      ...eventsSnap.docs.map(d => deleteDoc(doc(db, 'security_events', d.id))),
+      ...alertsSnap.docs.map(d => deleteDoc(doc(db, 'alerts',           d.id))),
+    ])
+  }
+
+  // Delete ALL events and ALL alerts — full clean slate.
+  async function clearAllData () {
+    const [eventsSnap, alertsSnap] = await Promise.all([
+      getDocs(collection(db, 'security_events')),
+      getDocs(collection(db, 'alerts')),
+    ])
+    await Promise.all([
+      ...eventsSnap.docs.map(d => deleteDoc(doc(db, 'security_events', d.id))),
+      ...alertsSnap.docs.map(d => deleteDoc(doc(db, 'alerts',           d.id))),
+    ])
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function formatMetadata (meta) {
     if (!meta) return ''
     if (typeof meta === 'string') return meta
-    const msg = meta.message
+    const msg  = meta.message
     const rest = Object.entries(meta)
       .filter(([k]) => k !== 'message')
       .map(([k, v]) => `${k}: ${v}`)
@@ -250,7 +259,6 @@ export function useSiem () {
   onMounted(() => {
     subscribeEvents()
     subscribeAlerts()
-    loadStats()
   })
 
   onUnmounted(() => {
@@ -259,7 +267,6 @@ export function useSiem () {
   })
 
   return {
-    // state
     events,
     alerts,
     openAlerts,
@@ -268,11 +275,11 @@ export function useSiem () {
     filteredEvents,
     chartData,
     chartOptions,
-    // actions
     acknowledgeAlert,
     resolveAlert,
     logEvent,
     runSimulation,
-    loadStats,
+    clearSimData,
+    clearAllData,
   }
 }

@@ -3,6 +3,10 @@
 
 import { ref } from 'vue'
 
+export function getSiemUserId () {
+  return localStorage.getItem('siem_user_email') || 'staff_user'
+}
+
 const CLIENT_ID    = '1000.S3IJADF48CR3220NYR50SPRMF8OG2I'
 const REDIRECT_URL = 'http://localhost:9000/redirect.html'
 const SCOPE        = 'ZohoMail.messages.ALL,ZohoMail.accounts.READ,ZohoMail.folders.ALL'
@@ -86,6 +90,7 @@ export function useZoho() {
       }
 
       const { accountId, mailboxAddress } = await accountRes.json()
+      localStorage.setItem('siem_user_email', mailboxAddress)
 
       // Step 2 — Build FormData (multipart so files travel together)
       if (attachments.length > 0) {

@@ -1,13 +1,38 @@
 <template>
   <q-page class="send-email-page">
+    <!-- ── TOP BAR ── -->
+    <div class="page-topbar">
+      <div class="topbar-left">
+        <div class="topbar-brand-icon">
+          <q-icon name="mail_lock" size="15px" />
+        </div>
+        <span class="topbar-title">MailGuard</span>
+        <span class="topbar-divider">·</span>
+        <span class="topbar-app">Insurance Email Composer</span>
+      </div>
+      <div class="topbar-right">
+        <div
+          class="send-status"
+          :class="isReadyToSend ? 'status--ready' : 'status--pending'"
+        >
+          <q-icon
+            :name="isReadyToSend ? 'check_circle' : 'radio_button_unchecked'"
+            size="12px"
+          />
+          {{ isReadyToSend ? "Ready to send" : "Fill required fields" }}
+        </div>
+      </div>
+    </div>
+
     <!-- ── THREE-COLUMN GRID ── -->
     <div class="composer-grid q-pa-md">
-      <!-- ══ COLUMN 1: EMAIL CONFIGURATION ══ -->
-      <q-card flat bordered class="composer-card config-card">
+      <!-- ══ COLUMN 1: EMAIL SETUP ══ -->
+      <q-card flat bordered class="composer-card">
         <q-card-section class="card-header-section">
+          <div class="step-badge">1</div>
           <div class="card-header-left">
-            <div class="card-title">Email Configuration</div>
-            <div class="card-subtitle">Company, template, and recipients</div>
+            <div class="card-title">Email Setup</div>
+            <div class="card-subtitle">Company, template &amp; recipients</div>
           </div>
           <div class="card-icon-wrap icon-blue">
             <q-icon name="tune" size="18px" />
@@ -17,7 +42,12 @@
         <q-separator class="soft-sep" />
 
         <q-card-section class="card-scroll-body q-gutter-sm">
-          <!-- Company -->
+          <!-- ─ Email ─ -->
+          <div class="inner-section-label">
+            <q-icon name="mail_outline" size="12px" />
+            Email
+          </div>
+
           <div class="field-wrap">
             <div class="field-label">Insurance Company</div>
             <q-select
@@ -38,7 +68,6 @@
             </q-select>
           </div>
 
-          <!-- Template -->
           <div class="field-wrap">
             <div class="field-label">Email Template</div>
             <q-select
@@ -59,9 +88,8 @@
             </q-select>
           </div>
 
-          <!-- Subject -->
           <div class="field-wrap">
-            <div class="field-label">Subject</div>
+            <div class="field-label">Subject Line</div>
             <q-input
               v-model="form.subject"
               outlined
@@ -75,11 +103,14 @@
             </q-input>
           </div>
 
-          <q-separator class="field-sep" />
+          <!-- ─ Recipients ─ -->
+          <div class="inner-section-label">
+            <q-icon name="people_outline" size="12px" />
+            Recipients
+          </div>
 
-          <!-- To -->
           <div class="field-wrap">
-            <div class="field-label">To (Recipients)</div>
+            <div class="field-label">To — Primary Recipients</div>
             <q-select
               v-model="form.to"
               :options="toOptions"
@@ -112,9 +143,8 @@
             </q-select>
           </div>
 
-          <!-- CC -->
           <div class="field-wrap">
-            <div class="field-label">CC (Carbon Copy)</div>
+            <div class="field-label">CC — Carbon Copy</div>
             <q-select
               v-model="form.cc"
               :options="ccOptions"
@@ -147,11 +177,14 @@
             </q-select>
           </div>
 
-          <q-separator class="field-sep" />
+          <!-- ─ Attachments ─ -->
+          <div class="inner-section-label">
+            <q-icon name="attach_file" size="12px" />
+            Attachments
+          </div>
 
-          <!-- Attachments -->
           <div class="field-wrap">
-            <div class="field-label">Attachments</div>
+            <div class="field-label">Files</div>
             <q-file
               v-model="form.attachments"
               outlined
@@ -159,11 +192,12 @@
               multiple
               use-chips
               clearable
-              placeholder="Drop files or click to upload"
+              placeholder="Drop files or click to attach"
               class="styled-input"
+              @update:model-value="onAttachmentsChange"
             >
               <template #prepend>
-                <q-icon name="attach_file" color="primary" size="16px" />
+                <q-icon name="cloud_upload" color="primary" size="16px" />
               </template>
               <template #hint>
                 <span class="file-hint">
@@ -174,9 +208,38 @@
             </q-file>
           </div>
 
-          <!-- Attachment mode -->
+          <!-- ─ Attachment Previews ─ -->
+          <div v-if="attachmentList.length" class="attach-preview-strip">
+            <div
+              v-for="(file, i) in attachmentList"
+              :key="i"
+              class="attach-preview-card"
+              @click.stop="openLightbox(i)"
+            >
+              <q-btn
+                flat round dense
+                icon="close"
+                size="xs"
+                color="grey-5"
+                class="attach-remove-btn"
+                @click.stop="removeAttachment(i)"
+              />
+              <img
+                v-if="isImageFile(file)"
+                :src="previewUrls[i]"
+                class="attach-preview-thumb"
+                :title="file.name"
+              />
+              <div v-else class="attach-preview-icon-wrap">
+                <q-icon :name="fileTypeIcon(file)" size="24px" color="primary" />
+              </div>
+              <div class="attach-preview-name" :title="file.name">{{ file.name }}</div>
+              <div class="attach-preview-size">{{ formatFileSize(file.size) }}</div>
+            </div>
+          </div>
+
           <div class="field-wrap">
-            <div class="field-label">Attachment Mode</div>
+            <div class="field-label">Send attachments as</div>
             <div class="attach-mode-row">
               <div
                 class="mode-option"
@@ -184,7 +247,7 @@
                 @click="form.attachmentMode = 'merge'"
               >
                 <q-icon name="merge_type" size="15px" />
-                Merged PDF
+                One merged PDF
               </div>
               <div
                 class="mode-option"
@@ -192,51 +255,58 @@
                 @click="form.attachmentMode = 'separate'"
               >
                 <q-icon name="call_split" size="15px" />
-                Separate Files
+                Separate files
               </div>
             </div>
           </div>
         </q-card-section>
       </q-card>
 
-      <!-- ══ COLUMN 2: EMAIL EDITOR ══ -->
+      <!-- ══ COLUMN 2: COMPOSE ══ -->
       <q-card flat bordered class="composer-card editor-card">
         <q-card-section class="card-header-section">
+          <div class="step-badge">2</div>
           <div class="card-header-left">
-            <div class="card-title">Email Content Editor</div>
-            <div class="card-subtitle">
-              {{ form.template || "No template selected" }}
+            <div class="card-title">Compose Email</div>
+            <div class="card-subtitle card-subtitle--template">
+              <q-icon
+                :name="form.template ? 'check_circle' : 'info_outline'"
+                :color="form.template ? 'positive' : 'grey-4'"
+                size="11px"
+              />
+              {{
+                form.template
+                  ? templateOptions.find((t) => t.value === form.template)
+                      ?.label || form.template
+                  : "Select a template in Step 1 to begin"
+              }}
             </div>
           </div>
-          <div style="display: flex; align-items: center; gap: 8px">
-            <div class="card-icon-wrap icon-blue">
-              <q-icon name="edit_note" size="18px" />
-            </div>
+          <div class="card-icon-wrap icon-blue">
+            <q-icon name="edit_note" size="18px" />
           </div>
         </q-card-section>
 
         <q-separator class="soft-sep" />
 
-        <!-- Rich text editor -->
         <q-card-section class="editor-body q-pa-md">
           <q-editor
             v-model="form.content"
             :toolbar="editorToolbar"
             min-height="100%"
             class="tg-editor"
-            placeholder="Email content will appear here after selecting a template..."
+            placeholder="Email body will appear here once a template is selected..."
           />
         </q-card-section>
 
         <q-separator class="soft-sep" inset />
 
-        <!-- Action bar -->
         <q-card-section class="action-bar q-pt-sm">
           <q-btn
             unelevated
             color="primary"
-            label="Auth Email"
-            icon="lock"
+            label="Authorize Zoho"
+            icon="lock_open"
             no-caps
             class="action-btn auth-btn"
             @click="handleAuthEmail"
@@ -256,8 +326,8 @@
           <q-btn
             flat
             color="negative"
-            label="Reset"
-            icon="clear"
+            label="Reset All"
+            icon="restart_alt"
             no-caps
             class="action-btn"
             @click="resetForm"
@@ -265,178 +335,100 @@
         </q-card-section>
       </q-card>
 
-      <!-- ══ COLUMN 3: OCR + FORM INPUTS (single card) ══ -->
+      <!-- ══ COLUMN 3: POLICY DETAILS ══ -->
       <div class="right-col">
         <q-card flat bordered class="composer-card">
-          <!-- OCR HEADER -->
-          <q-card-section class="ocr-section q-gutter-sm">
-            <div class="card-header-left">
-              <div class="card-title">OCR File Reader</div>
-              <div class="card-subtitle">Attach files to read in OCR</div>
-            </div>
-            <div class="card-icon-wrap icon-teal">
-              <q-icon name="document_scanner" size="18px" />
-            </div>
-          </q-card-section>
-
-          <q-separator class="soft-sep" />
-
-          <!-- ═══════════════════════════════════════════════════════════════
-               OCR BODY — CHANGED: wired to useOcr composable
-               ═══════════════════════════════════════════════════════════ -->
-          <q-card-section class="q-gutter-sm">
-            <!-- removed: multiple / use-chips  added: @update:model-value -->
-            <q-file
-              v-model="form.ocrFiles"
-              outlined
-              dense
-              clearable
-              accept=".png,.jpg,.jpeg,.bmp,.tiff,.webp,.pdf"
-              class="styled-input"
-              @update:model-value="(val) => onOcrFileSelected(val || null)"
-            >
-              <template #prepend>
-                <q-icon name="upload_file" color="teal-6" size="16px" />
-              </template>
-              <template #label>
-                <span style="font-size: 12px">Upload for OCR extraction</span>
-              </template>
-            </q-file>
-
-            <!-- determinate progress bar while scanning -->
-            <q-linear-progress
-              v-if="ocrLoading"
-              :value="ocrProgress / 100"
-              color="teal"
-              track-color="teal-1"
-              style="border-radius: 4px"
-            />
-
-            <!-- status banner: idle / loading / error / success -->
-            <q-banner rounded class="ocr-banner" :class="ocrBannerClass">
-              <template #avatar>
-                <q-icon
-                  :name="ocrBannerIcon"
-                  :color="ocrBannerIconColor"
-                  size="18px"
-                />
-              </template>
-              <span class="ocr-banner-text">{{ ocrStatusMessage }}</span>
-            </q-banner>
-
-            <!-- raw text fallback — only shown when OCR ran but matched nothing -->
-            <div v-if="ocrRawText && ocrFoundCount === 0 && !ocrError" class="ocr-raw-wrap">
-              <div class="ocr-raw-label">No fields matched — raw OCR text:</div>
-              <div class="ocr-raw-text">{{ ocrRawText }}</div>
-            </div>
-
-            <div v-if="ocrFoundCount > 0" class="ocr-fields-wrap">
-              <div class="ocr-fields-header">
-                <span class="ocr-fields-title">
-                  {{ ocrFoundCount }} field{{ ocrFoundCount !== 1 ? "s" : "" }}
-                  found
-                </span>
-                <q-btn
-                  flat
-                  dense
-                  size="xs"
-                  color="teal-7"
-                  icon="auto_fix_high"
-                  label="Apply all"
-                  no-caps
-                  @click="applyAllOcrFields"
-                />
-              </div>
-              <div class="ocr-chip-grid">
-                <div
-                  v-for="(value, key) in ocrNonNullFields"
-                  :key="key"
-                  class="ocr-chip"
-                  :class="{ 'ocr-chip--applied': ocrApplied.has(key) }"
-                  @click="applySingleOcrField(key, value)"
-                >
-                  <div class="ocr-chip__label">{{ ocrFieldLabel(key) }}</div>
-                  <div class="ocr-chip__value">{{ value }}</div>
-                  <q-icon
-                    class="ocr-chip__icon"
-                    :name="ocrApplied.has(key) ? 'check' : 'add'"
-                    size="12px"
-                  />
-                </div>
-              </div>
-            </div>
-          </q-card-section>
-          <!-- ═══════════════════════════════════════════════════════════ -->
-
-          <!-- DIVIDER between OCR and Form Inputs -->
-          <q-separator class="soft-sep" />
-
-          <!-- FORM INPUTS HEADER -->
           <q-card-section class="card-header-section">
+            <div class="step-badge step-badge--purple">3</div>
             <div class="card-header-left">
-              <div class="card-title">Form Inputs</div>
-              <div class="card-subtitle">Fill details for the template</div>
+              <div class="card-title">Policy Details</div>
+              <div class="card-subtitle">
+                Customer &amp; vehicle information
+              </div>
             </div>
             <div class="card-icon-wrap icon-purple">
-              <q-icon name="edit_square" size="18px" />
+              <q-icon name="policy" size="18px" />
             </div>
           </q-card-section>
 
           <q-separator class="soft-sep" />
 
-          <!-- FORM INPUTS BODY -->
           <q-card-section class="card-scroll-body q-gutter-sm">
             <q-btn
               unelevated
               color="teal-7"
               icon="document_scanner"
-              label="Upload & Extract"
+              label="Scan Documents via OCR"
               no-caps
               class="full-width-btn"
               @click="ocrDialogOpen = true"
             />
 
-            <q-separator class="field-sep" />
+            <!-- ─ Customer ─ -->
+            <div class="inner-section-label">
+              <q-icon name="person_outline" size="12px" />
+              Customer
+            </div>
 
             <q-input
               v-model="formInputs.customerName"
               outlined
               dense
-              label="Customer Name"
+              label="Full Name"
               class="styled-input"
-            />
+            >
+              <template #prepend>
+                <q-icon name="badge" color="primary" size="15px" />
+              </template>
+            </q-input>
 
             <q-input
               v-model="formInputs.customerCPR"
               outlined
               dense
-              label="Customer CPR / CR"
+              label="CPR / CR Number"
               class="styled-input"
-            />
+            >
+              <template #prepend>
+                <q-icon name="fingerprint" color="primary" size="15px" />
+              </template>
+            </q-input>
 
             <q-checkbox
               v-model="formInputs.underCompanyName"
-              label="Under Company Name"
+              label="Policy is under a company name"
               color="primary"
               dense
               class="company-check"
             />
+
+            <!-- ─ Vehicle ─ -->
+            <div class="inner-section-label">
+              <q-icon name="directions_car" size="12px" />
+              Vehicle
+            </div>
 
             <div class="input-row">
               <q-input
                 v-model="formInputs.plateNo"
                 outlined
                 dense
-                label="Plate No"
+                label="Plate No."
                 class="styled-input"
               />
               <q-input
                 v-model="formInputs.chassisNo"
                 outlined
                 dense
-                label="Chassis No"
+                label="Chassis No."
                 class="styled-input"
               />
+            </div>
+
+            <!-- ─ Policy Period ─ -->
+            <div class="inner-section-label">
+              <q-icon name="event_note" size="12px" />
+              Policy Period
             </div>
 
             <div class="input-row">
@@ -466,7 +458,7 @@
               emit-value
               map-options
               options-dense
-              label="Government Type"
+              label="Registration Type"
               clearable
               class="styled-select"
             >
@@ -475,21 +467,27 @@
               </template>
             </q-select>
 
+            <!-- ─ Actions ─ -->
+            <div class="inner-section-label">
+              <q-icon name="bolt" size="12px" />
+              Actions
+            </div>
+
             <q-btn
               unelevated
-              color="dark"
-              label="Set Info in Mail"
+              color="indigo-7"
+              label="Apply Details to Template"
               icon="auto_fix_high"
               no-caps
-              class="full-width-btn q-mt-xs"
+              class="full-width-btn"
               @click="setInfoInMail"
             />
 
             <q-btn
               unelevated
-              color="negative"
-              label="Open Traffic"
-              icon="traffic"
+              color="deep-orange-7"
+              label="Bahrain Traffic Lookup"
+              icon="travel_explore"
               no-caps
               class="full-width-btn"
               @click="openTraffic"
@@ -503,6 +501,59 @@
       v-model="ocrDialogOpen"
       @fields-confirmed="onFieldsConfirmed"
     />
+
+    <!-- ── LIGHTBOX ── -->
+    <q-dialog v-model="lightboxOpen" maximized>
+      <div class="lightbox-overlay" @click.self="lightboxOpen = false">
+
+        <div class="lightbox-topbar">
+          <div class="lightbox-filename">{{ attachmentList[lightboxIndex]?.name }}</div>
+          <div class="lightbox-counter">{{ lightboxIndex + 1 }} / {{ attachmentList.length }}</div>
+          <q-btn flat round dense icon="close" color="white" size="sm" @click="lightboxOpen = false" />
+        </div>
+
+        <div class="lightbox-body">
+          <q-btn
+            flat round
+            icon="chevron_left"
+            color="white"
+            size="lg"
+            class="lightbox-nav-btn"
+            :disable="lightboxIndex === 0"
+            @click="lightboxIndex--"
+          />
+
+          <div class="lightbox-content">
+            <img
+              v-if="attachmentList[lightboxIndex] && isImageFile(attachmentList[lightboxIndex])"
+              :src="previewUrls[lightboxIndex]"
+              class="lightbox-img"
+            />
+            <iframe
+              v-else-if="attachmentList[lightboxIndex]?.type === 'application/pdf'"
+              :src="previewUrls[lightboxIndex]"
+              class="lightbox-pdf"
+            />
+            <div v-else-if="attachmentList[lightboxIndex]" class="lightbox-fallback">
+              <q-icon :name="fileTypeIcon(attachmentList[lightboxIndex])" size="72px" color="blue-3" />
+              <div class="lightbox-fallback-name">{{ attachmentList[lightboxIndex].name }}</div>
+              <div class="lightbox-fallback-size">{{ formatFileSize(attachmentList[lightboxIndex].size) }}</div>
+            </div>
+          </div>
+
+          <q-btn
+            flat round
+            icon="chevron_right"
+            color="white"
+            size="lg"
+            class="lightbox-nav-btn"
+            :disable="lightboxIndex === attachmentList.length - 1"
+            @click="lightboxIndex++"
+          />
+        </div>
+
+      </div>
+    </q-dialog>
   </q-page>
 </template>
 
@@ -511,8 +562,11 @@ import { emailTemplates } from "src/data/emailTemplates";
 import { useCompanies } from "src/composables/useCompanies";
 import { useZoho } from "src/composables/useZoho";
 import { useSentEmails } from "src/composables/useSentEmails";
-import { useOcr } from "src/composables/useOcr";
 import OcrUploadDialog from "src/components/OcrUploadDialog.vue";
+import { useBahrainLookup } from "src/composables/useBahrainLookup";
+import { logSiemEvent } from "src/composables/useSeim";
+import { getSiemUserId } from "src/composables/useZoho";
+import { validateFile } from "src/composables/useFileValidation";
 
 export default {
   name: "SendEmailPage",
@@ -529,18 +583,7 @@ export default {
     } = useZoho();
     const { saveSentEmail } = useSentEmails();
 
-    // ── CHANGED: wire useOcr ──────────────────────────────────────────────
-    const {
-      uploadAndExtract,
-      ocrLoading,
-      ocrError,
-      ocrFields,
-      ocrProgress,
-      resetOcr,
-      fieldLabel: ocrFieldLabel,
-      ocrRawText,
-    } = useOcr();
-    // ─────────────────────────────────────────────────────────────────────
+    const { runLookup, lookupLoading, lookupError } = useBahrainLookup();
 
     return {
       companies,
@@ -550,15 +593,9 @@ export default {
       getTokenAgeMinutes,
       clearSession,
       saveSentEmail,
-      // ── CHANGED: expose OCR refs ────────────────────────────────────────
-      uploadAndExtract,
-      ocrLoading,
-      ocrError,
-      ocrFields,
-      ocrRawText,
-      ocrProgress,
-      resetOcr,
-      ocrFieldLabel,
+      runLookup,
+      lookupLoading,
+      lookupError,
     };
   },
 
@@ -567,9 +604,9 @@ export default {
       sending: false,
       zohoConnected: false,
       ocrDialogOpen: false,
-      // ── CHANGED: replaced ocrProcessing/ocrStatus with ocrApplied ───────
-      ocrApplied: new Set(),
-      // ─────────────────────────────────────────────────────────────────────
+      previewUrls: [],
+      lightboxOpen: false,
+      lightboxIndex: 0,
 
       templateOptions: [
         { label: "Special Approval", value: "specialApproval" },
@@ -579,9 +616,21 @@ export default {
       ],
 
       governmentTypeOptions: [
-        { label: "خاص — Private", value: "private" },
-        { label: "حكومي — Government", value: "government" },
-        { label: "تجاري — Commercial", value: "commercial" },
+        { label: "خصوصي — Private", value: "01" },
+        { label: "نقل خاص — PVT Goods Vehicle", value: "02" },
+        { label: "مشترك خاص — PVT D/C Pickup", value: "03" },
+        { label: "خاص للركاب — PVT Passengers", value: "04" },
+        { label: "للتأجير — For Hire", value: "05" },
+        { label: "عام مشترك — Public D/C Pickup", value: "06" },
+        { label: "عام للركاب — Public Transport", value: "07" },
+        { label: "باص سياحي — Tourist Bus", value: "08" },
+        { label: "دراجه نارية — Motor Cycle", value: "09" },
+        { label: "للمقاولات — Contractors", value: "10" },
+        { label: "استعمال خاص — Special use", value: "11" },
+        { label: "الديوان — Royal Court", value: "12" },
+        { label: "هيئه سياسية — Diplomatic", value: "13" },
+        { label: "شبه مقطورة — Semi Trailer", value: "14" },
+        { label: "مقطورة — Trailer", value: "15" },
       ],
 
       form: {
@@ -593,7 +642,6 @@ export default {
         attachments: null,
         attachmentMode: "merge",
         content: "",
-        ocrFiles: null,
       },
 
       formInputs: {
@@ -652,40 +700,12 @@ export default {
       return this.form.cc ?? [];
     },
 
-    // ── CHANGED: OCR computed properties ───────────────────────────────────
-    ocrNonNullFields() {
-      if (!this.ocrFields || typeof this.ocrFields !== "object") return {};
-      return Object.fromEntries(
-        Object.entries(this.ocrFields).filter(([, v]) => v !== null),
-      );
+    attachmentList() {
+      if (!this.form.attachments) return [];
+      return Array.isArray(this.form.attachments)
+        ? this.form.attachments
+        : [this.form.attachments];
     },
-    ocrFoundCount() {
-      return Object.keys(this.ocrNonNullFields).length;
-    },
-    ocrStatusMessage() {
-      if (this.ocrLoading) return `Scanning document… ${this.ocrProgress}%`;
-      if (this.ocrError) return this.ocrError;
-      if (this.ocrFields)
-        return `${this.ocrFoundCount} field${this.ocrFoundCount !== 1 ? "s" : ""} extracted — click chips to apply or use "Apply all".`;
-      return "Upload an image or PDF (JPG, PNG, BMP, TIFF, WebP, PDF) to auto-fill fields.";
-    },
-    ocrBannerClass() {
-      if (this.ocrError) return "ocr-banner--error";
-      if (this.ocrFields) return "ocr-banner--success";
-      return "";
-    },
-    ocrBannerIcon() {
-      if (this.ocrLoading) return "hourglass_empty";
-      if (this.ocrError) return "error_outline";
-      if (this.ocrFields) return "check_circle";
-      return "tips_and_updates";
-    },
-    ocrBannerIconColor() {
-      if (this.ocrError) return "negative";
-      if (this.ocrFields) return "positive";
-      return "teal-7";
-    },
-    // ─────────────────────────────────────────────────────────────────────
   },
 
   watch: {
@@ -720,115 +740,116 @@ export default {
       },
       deep: true,
     },
+
+    attachmentList(files) {
+      this.refreshPreviewUrls(files);
+    },
+
+    lightboxOpen(val) {
+      if (val) {
+        document.addEventListener("keydown", this._lightboxKey);
+      } else {
+        document.removeEventListener("keydown", this._lightboxKey);
+      }
+    },
   },
 
   methods: {
-    // ── CHANGED: OCR methods ───────────────────────────────────────────────
-    async onOcrFileSelected(file) {
-      if (!file) {
-        this.resetOcr();
-        this.ocrApplied = new Set();
-        return;
-      }
-      this.ocrApplied = new Set();
-      const result = await this.uploadAndExtract(file).catch(() => null);
-      if (!result || !result.fields) return;
-      // Do NOT auto-apply — show chips so user can confirm each field
-      if (result.foundCount > 0) {
-        this.$q.notify({
-          type: "info",
-          message: `${result.foundCount} field${result.foundCount !== 1 ? "s" : ""} found — review below and click to apply`,
-          icon: "document_scanner",
-          timeout: 4000,
-        });
-      } else {
-        this.$q.notify({
-          type: "warning",
-          message:
-            "OCR ran but found no recognisable fields. Try a clearer scan or higher resolution.",
-          icon: "search_off",
-          timeout: 5000,
-        });
-      }
-    },
-
-    mergeOcrFields(fields, overwriteEmpty = false) {
-      const map = {
-        insuredName: "customerName",
-        cprNumber: "customerCPR",
-        crNumber: "customerCPR",
-        plateNumber: "plateNo",
-        chassisNumber: "chassisNo",
-        effectiveDate: "startDate",
-        expiryDate: "expiryDate",
-      };
-      for (const [ocrKey, formKey] of Object.entries(map)) {
-        if (!fields[ocrKey]) continue;
-        if (overwriteEmpty && this.formInputs[formKey]) continue;
-        this.formInputs[formKey] =
-          formKey === "startDate" || formKey === "expiryDate"
-            ? this.toInputDate(fields[ocrKey])
-            : fields[ocrKey];
-        this.ocrApplied = new Set([...this.ocrApplied, ocrKey]);
-      }
-    },
-
-    applySingleOcrField(ocrKey, value) {
-      const map = {
-        insuredName: "customerName",
-        cprNumber: "customerCPR",
-        crNumber: "customerCPR",
-        plateNumber: "plateNo",
-        chassisNumber: "chassisNo",
-        effectiveDate: "startDate",
-        expiryDate: "expiryDate",
-      };
-      const formKey = map[ocrKey];
-      if (formKey) {
-        this.formInputs[formKey] =
-          formKey === "startDate" || formKey === "expiryDate"
-            ? this.toInputDate(value)
-            : value;
-      }
-      this.ocrApplied = new Set([...this.ocrApplied, ocrKey]);
-    },
-
-    applyAllOcrFields() {
-      if (!this.ocrFields) return;
-      this.mergeOcrFields(this.ocrFields, false);
-      this.$q.notify({
-        type: "positive",
-        message: "All OCR fields applied",
-        icon: "auto_fix_high",
-        timeout: 2000,
-      });
-    },
-
     onFieldsConfirmed(fields) {
-      const map = {
-        owner_name:         "customerName",
-        cpr_number:         "customerCPR",
+      // Non-customer fields: simple 1-to-1 mapping
+      const simpleMap = {
         vehicle_reg_number: "plateNo",
-        chassis_number:     "chassisNo",
-        policy_start_date:  "startDate",
+        chassis_number: "chassisNo",
+        policy_start_date: "startDate",
         license_issue_date: "startDate",
-        policy_end_date:    "expiryDate",
-        expiry_date:        "expiryDate",
-        renewal_date:       "expiryDate",
+        policy_end_date: "expiryDate",
+        expiry_date: "expiryDate",
+        renewal_date: "expiryDate",
       };
-      for (const [ocrKey, formKey] of Object.entries(map)) {
+      for (const [ocrKey, formKey] of Object.entries(simpleMap)) {
         if (fields[ocrKey] == null) continue;
         const isDate = formKey === "startDate" || formKey === "expiryDate";
         this.formInputs[formKey] = isDate
           ? this.toInputDate(fields[ocrKey])
           : fields[ocrKey];
       }
-      // registration_type → governmentType (lowercase to match option values)
+
+      // registration_type → governmentType
       if (fields.registration_type) {
-        const t = fields.registration_type.toLowerCase();
-        if (["private", "government", "commercial"].includes(t)) {
-          this.formInputs.governmentType = t;
-        }
+        const REG_TYPE_MAP = [
+          { keywords: ['semi trailer'],                         value: '14' },
+          { keywords: ['trailer'],                              value: '15' },
+          { keywords: ['pvt goods', 'pvt good'],               value: '02' },
+          { keywords: ['pvt d/c', 'pvt pickup', 'mshtrk'],     value: '03' },
+          { keywords: ['pvt passenger', 'pvt transport'],       value: '04' },
+          { keywords: ['public d/c'],                          value: '06' },
+          { keywords: ['public transport', 'public'],          value: '07' },
+          { keywords: ['private', 'khsosy', 'خصوصي'],          value: '01' },
+          { keywords: ['for hire'],                            value: '05' },
+          { keywords: ['tourist'],                             value: '08' },
+          { keywords: ['motor cycle', 'motorcycle', 'motor'],  value: '09' },
+          { keywords: ['contractor'],                          value: '10' },
+          { keywords: ['special'],                             value: '11' },
+          { keywords: ['royal'],                               value: '12' },
+          { keywords: ['diplomatic'],                          value: '13' },
+        ];
+        const key = fields.registration_type.toLowerCase();
+        const matchedType = REG_TYPE_MAP.find(e => e.keywords.some(k => key.includes(k)));
+        if (matchedType) this.formInputs.governmentType = matchedType.value;
+      }
+
+      // ── Policy holder derivation (4 cases from ownership cert) ────────────
+      const ownerName       = fields.owner_name || fields.full_name || "";
+      const cprNumber       = fields.cpr_number    || "";
+      const crNumber        = fields.cr_number     || "";
+      const companyName     = fields.company_name  || "";
+      const bankName        = fields.bank_name     || "";
+      const ownershipStatus = fields.ownership_status; // 'cash' | 'installment' | null
+
+      const BANK_KEYWORDS = [
+        "BANK","FINANCE","FINANCIAL","CREDIT","FACILITIES","FINANCING",
+        "NBB","BBK","AUB","GIB","KFH","BISB","KHCB","FAB","BCF",
+        "BAHRAIN CREDIT",
+      ];
+      const COMPANY_SUFFIXES = ["WLL","BSC","SPC","LLC","LTD","LIMITED","B.S.C","W.L.L","S.P.C"];
+
+      const ownerIsBank    = ownerName && BANK_KEYWORDS.some(k => ownerName.toUpperCase().includes(k));
+      const ownerIsCompany = ownerName && COMPANY_SUFFIXES.some(s => ownerName.toUpperCase().includes(s));
+      const isCompany      = !!(crNumber || companyName || ownerIsCompany);
+      // If the owner IS a bank/finance entity, infer installment even without the ownership_status field
+      const isInstallment  = ownershipStatus === "installment" || (!!bankName && !ownerIsBank) || ownerIsBank;
+      // When the bank is the registered owner (Case 3), treat ownerName as the effective bank name
+      const effectiveBankName = bankName || (ownerIsBank ? ownerName : "");
+
+      if (isCompany) {
+        // Case 4: Company vehicle — use CR, not CPR
+        this.formInputs.customerName     = companyName || ownerName;
+        this.formInputs.customerCPR      = crNumber;
+        this.formInputs.underCompanyName = true;
+      } else if (isInstallment && effectiveBankName && ownerName && !ownerIsBank) {
+        // Case 2: Installment — joint: customerName & bankName
+        this.formInputs.customerName     = `${ownerName} & ${effectiveBankName}`;
+        this.formInputs.customerCPR      = cprNumber;
+        this.formInputs.underCompanyName = false;
+      } else if (isInstallment && (ownerIsBank || (effectiveBankName && !ownerName))) {
+        // Case 3: Installment — bank/finance company is the registered owner
+        this.formInputs.customerName     = effectiveBankName || ownerName;
+        this.formInputs.customerCPR      = cprNumber;
+        this.formInputs.underCompanyName = false;
+      } else {
+        // Case 1: Cash / personal ownership — individual owner
+        this.formInputs.customerName     = ownerName;
+        this.formInputs.customerCPR      = cprNumber;
+        this.formInputs.underCompanyName = false;
+      }
+
+      if (fields._cpr_mismatch_warning) {
+        this.$q.notify({
+          type: "warning",
+          message: fields._cpr_mismatch_warning,
+          icon: "warning",
+          timeout: 8000,
+        });
       }
       this.$q.notify({
         type: "positive",
@@ -871,6 +892,7 @@ export default {
       // Session check before anything
       if (!this.isTokenValid()) {
         this.clearSession();
+        logSiemEvent("ZOHO_TOKEN_FAILURE", getSiemUserId(), { message: "Session expired before send" }, "medium").catch(() => {});
         this.$q.notify({
           type: "warning",
           message:
@@ -916,6 +938,23 @@ export default {
           attachmentCount: attachments.length,
         });
 
+        const totalSizeBytes = attachments.reduce((s, f) => s + (f.size || 0), 0);
+        logSiemEvent("EMAIL_SENT", getSiemUserId(), {
+          company: this.companies.find((c) => c.id === this.form.company)?.name || "",
+          template: this.form.template,
+          attachmentCount: attachments.length,
+          totalSizeBytes,
+        }, "low").catch(() => {});
+
+        if (totalSizeBytes > 10 * 1024 * 1024) {
+          logSiemEvent("FILE_UPLOAD", getSiemUserId(), {
+            attachmentCount: attachments.length,
+            totalSizeBytes,
+            sizeMB: (totalSizeBytes / 1024 / 1024).toFixed(1),
+            message: `${(totalSizeBytes / 1024 / 1024).toFixed(1)} MB upload attached to email`,
+          }, totalSizeBytes > 15 * 1024 * 1024 ? "high" : "medium").catch(() => {});
+        }
+
         this.$q.notify({
           type: "positive",
           message: "Email sent successfully",
@@ -924,6 +963,7 @@ export default {
       } catch (err) {
         if (err.message === "SESSION_EXPIRED") {
           this.clearSession();
+          logSiemEvent("ZOHO_TOKEN_FAILURE", getSiemUserId(), { message: "Session expired during send" }, "medium").catch(() => {});
           this.$q.notify({
             type: "warning",
             message: "Zoho session expired. Please re-authorise.",
@@ -1005,45 +1045,196 @@ export default {
       });
     },
 
-    openTraffic() {
-      window.open("https://bahrain.bh", "_blank");
+    async openTraffic() {
+      const { customerCPR, plateNo, governmentType, underCompanyName } =
+        this.formInputs;
+      if (!customerCPR || !plateNo) {
+        this.$q.notify({
+          type: "warning",
+          message: "CPR/CR and Plate No must be filled first",
+          icon: "warning",
+        });
+        return;
+      }
+      this.$q.notify({
+        type: "info",
+        message: "Genie is running... Firefox will open automatically",
+        icon: "smart_toy",
+        timeout: 8000,
+      });
+      const result = await this.runLookup({
+        cpr: customerCPR,
+        plateno: plateNo,
+        company: underCompanyName,
+        regTypeID: governmentType || "01",
+      });
+      if (!result) {
+        this.$q.notify({
+          type: "negative",
+          message:
+            this.lookupError ||
+            "Traffic lookup failed — is the Genie server running?",
+          icon: "error",
+          timeout: 6000,
+        });
+        return;
+      }
+      const v = result.vehicleData;
+      if (v) {
+        if (v.chassisNo) this.formInputs.chassisNo = v.chassisNo;
+        if (v.plateNo)   this.formInputs.plateNo   = v.plateNo;
+        if (v.regExpiry) this.formInputs.expiryDate = v.regExpiry;
+        if (v.regType) {
+          const upper = v.regType.toUpperCase();
+          const REG_KEYWORD_MAP = [
+            { keywords: ['SEMI TRAILER'],                    value: '14' },
+            { keywords: ['TRAILER'],                         value: '15' },
+            { keywords: ['PVT GOODS'],                       value: '02' },
+            { keywords: ['PVT D/C'],                         value: '03' },
+            { keywords: ['PVT PASSENGER', 'PVT TRANSPORT'],  value: '04' },
+            { keywords: ['PUBLIC D/C'],                      value: '06' },
+            { keywords: ['PUBLIC'],                          value: '07' },
+            { keywords: ['PRIVATE'],                         value: '01' },
+            { keywords: ['FOR HIRE'],                        value: '05' },
+            { keywords: ['TOURIST'],                         value: '08' },
+            { keywords: ['MOTOR'],                           value: '09' },
+            { keywords: ['CONTRACTOR'],                      value: '10' },
+            { keywords: ['SPECIAL'],                         value: '11' },
+            { keywords: ['ROYAL'],                           value: '12' },
+            { keywords: ['DIPLOMATIC'],                      value: '13' },
+          ];
+          const match = REG_KEYWORD_MAP.find(e => e.keywords.some(k => upper.includes(k)));
+          if (match) this.formInputs.governmentType = match.value;
+        }
+      }
+
+      // Convert base64 string → File without fetch (avoids data-URI size limits)
+      const b64ToFile = (b64, name, mime) => {
+        const bytes = atob(b64);
+        const arr = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+        return new File([arr], name, { type: mime });
+      };
+      const newFiles = [];
+      const ts = Date.now();
+      console.log('[Traffic] screenshotData count:', result.screenshotData?.length, '| pdfData:', !!result.pdfData);
+      for (let i = 0; i < (result.screenshotData || []).length; i++) {
+        const f = b64ToFile(result.screenshotData[i], `traffic_screenshot_${ts}_${i + 1}.png`, 'image/png');
+        console.log(`[Traffic] screenshot ${i + 1}: ${f.size} bytes`);
+        newFiles.push(f);
+      }
+      if (result.pdfData) {
+        const f = b64ToFile(result.pdfData, `traffic_report_${ts}.pdf`, 'application/pdf');
+        console.log(`[Traffic] pdf: ${f.size} bytes`);
+        newFiles.push(f);
+      }
+      if (newFiles.length > 0) {
+        const existing = Array.isArray(this.form.attachments) ? this.form.attachments : [];
+        this.form.attachments = [...existing, ...newFiles];
+      }
+
+      this.$q.notify({
+        type: "positive",
+        message: `Traffic report ready — fields filled${newFiles.length ? `, ${newFiles.length} file(s) added to attachments` : ''}`,
+        icon: "check_circle",
+        timeout: 6000,
+      });
     },
 
     resetForm() {
-      this.$q
-        .dialog({
-          title: "Reset form",
-          message: "Are you sure you want to clear all fields?",
-          cancel: true,
-          persistent: true,
-        })
-        .onOk(() => {
-          this.form = {
-            company: null,
-            template: null,
-            subject: "",
-            to: [],
-            cc: [],
-            attachments: null,
-            attachmentMode: "merge",
-            content: "",
-            ocrFiles: null,
-          };
-          this.formInputs = {
-            customerName: "",
-            customerCPR: "",
-            underCompanyName: false,
-            plateNo: "",
-            chassisNo: "",
-            startDate: "",
-            expiryDate: "",
-            governmentType: null,
-          };
-          // ── CHANGED: reset OCR state ──────────────────────────────────
-          this.resetOcr();
-          this.ocrApplied = new Set();
-        });
+      if (!window.confirm("Are you sure you want to clear all fields?")) return;
+      this.form = {
+        company: null,
+        template: null,
+        subject: "",
+        to: [],
+        cc: [],
+        attachments: null,
+        attachmentMode: "merge",
+        content: "",
+      };
+      this.formInputs = {
+        customerName: "",
+        customerCPR: "",
+        underCompanyName: false,
+        plateNo: "",
+        chassisNo: "",
+        startDate: "",
+        expiryDate: "",
+        governmentType: null,
+      };
     },
+
+    isImageFile(file) {
+      return file.type.startsWith("image/");
+    },
+
+    fileTypeIcon(file) {
+      if (file.type === "application/pdf") return "picture_as_pdf";
+      if (file.type.startsWith("text/")) return "description";
+      if (file.type.includes("word") || file.type.includes("document")) return "article";
+      if (file.type.includes("excel") || file.type.includes("spreadsheet")) return "table_chart";
+      return "insert_drive_file";
+    },
+
+    formatFileSize(bytes) {
+      if (bytes < 1024) return bytes + " B";
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+      return (bytes / (1024 * 1024)).toFixed(2) + " MB";
+    },
+
+    removeAttachment(idx) {
+      if (this.previewUrls[idx]) URL.revokeObjectURL(this.previewUrls[idx]);
+      const arr = [...this.attachmentList];
+      arr.splice(idx, 1);
+      this.form.attachments = arr.length ? arr : null;
+    },
+
+    onAttachmentsChange(files) {
+      if (!files) return;
+      const list = Array.isArray(files) ? files : [files];
+      const accepted = [];
+      for (const file of list) {
+        const result = validateFile(file, 'email');
+        if (!result.ok) {
+          logSiemEvent('FILE_REJECTED', getSiemUserId(), {
+            filename: file.name,
+            fileSize: file.size,
+            reason:   result.reason,
+          }, 'medium').catch(() => {});
+          this.$q.notify({
+            type:    'negative',
+            message: `${file.name} rejected — ${result.reason}`,
+            icon:    'block',
+            timeout: 6000,
+          });
+        } else {
+          accepted.push(file);
+        }
+      }
+      this.form.attachments = accepted.length ? accepted : null;
+    },
+
+    refreshPreviewUrls(files) {
+      this.previewUrls.forEach((u) => { if (u) URL.revokeObjectURL(u); });
+      this.previewUrls = files.map((f) => URL.createObjectURL(f));
+    },
+
+    openLightbox(i) {
+      this.lightboxIndex = i;
+      this.lightboxOpen = true;
+    },
+
+    _lightboxKey(e) {
+      if (e.key === "ArrowLeft" && this.lightboxIndex > 0) this.lightboxIndex--;
+      else if (e.key === "ArrowRight" && this.lightboxIndex < this.attachmentList.length - 1) this.lightboxIndex++;
+      else if (e.key === "Escape") this.lightboxOpen = false;
+    },
+  },
+
+  beforeUnmount() {
+    this.previewUrls.forEach((u) => { if (u) URL.revokeObjectURL(u); });
+    document.removeEventListener("keydown", this._lightboxKey);
   },
 };
 </script>
@@ -1057,55 +1248,81 @@ export default {
   flex-direction: column;
 }
 
-/* ── PAGE HEADER ── */
-.page-header {
-  background: #ffffff;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
-  box-shadow: 0 1px 4px rgba(15, 31, 61, 0.06);
-  flex-shrink: 0;
-  padding: 0 20px;
-}
-.page-header-inner {
+/* ── TOP BAR ── */
+.page-topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 56px;
+  height: 48px;
+  padding: 0 20px;
+  background: #ffffff;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  box-shadow: 0 1px 4px rgba(15, 31, 61, 0.05);
+  flex-shrink: 0;
 }
-.page-title {
-  font-size: 15px;
-  font-weight: 700;
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.topbar-brand-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.topbar-title {
+  font-size: 14px;
+  font-weight: 800;
   color: #0f1f3d;
-  letter-spacing: -0.2px;
+  letter-spacing: -0.3px;
 }
-.page-subtitle {
+.topbar-divider {
+  color: #cbd5e1;
+  font-size: 14px;
+}
+.topbar-app {
   font-size: 12px;
   color: #8492a6;
-  margin-top: 1px;
+  font-weight: 500;
 }
-.header-badges {
+.topbar-right {
   display: flex;
-  gap: 8px;
   align-items: center;
+  gap: 10px;
 }
-.status-chip {
-  font-size: 11px !important;
-  font-weight: 600 !important;
-  height: 26px !important;
-  border-radius: 6px !important;
+.send-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
 }
-.ready-chip {
-  font-size: 11px !important;
-  font-weight: 600 !important;
-  height: 24px !important;
+.status--ready {
+  background: #f0fdf4;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+}
+.status--pending {
+  background: #f8faff;
+  color: #94a3b8;
+  border: 1px solid #e2e8f0;
 }
 
 /* ── GRID ── */
 .composer-grid {
   display: grid;
-  grid-template-columns: 280px 1fr 340px;
+  grid-template-columns: 290px 1fr 340px;
   gap: 16px;
   flex: 1;
-  height: calc(100vh - 56px);
+  height: calc(100vh - 48px - 32px);
   min-height: 0;
 }
 
@@ -1123,9 +1340,13 @@ export default {
 .card-header-section {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px 12px !important;
+  gap: 10px;
+  padding: 13px 16px 11px !important;
   flex-shrink: 0;
+}
+.card-header-left {
+  flex: 1;
+  min-width: 0;
 }
 .card-title {
   font-size: 13px;
@@ -1136,6 +1357,11 @@ export default {
   font-size: 11px;
   color: #8492a6;
   margin-top: 2px;
+}
+.card-subtitle--template {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .card-icon-wrap {
   width: 32px;
@@ -1159,6 +1385,42 @@ export default {
   color: #7c3aed;
 }
 
+/* ── STEP BADGES ── */
+.step-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 1.5px solid #bfdbfe;
+}
+.step-badge--purple {
+  background: #f5f3ff;
+  color: #7c3aed;
+  border-color: #ddd6fe;
+}
+
+/* ── INNER SECTION LABELS ── */
+.inner-section-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  padding: 6px 0 2px;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 2px;
+}
+
 .soft-sep {
   opacity: 0.5;
 }
@@ -1171,7 +1433,7 @@ export default {
 .card-scroll-body {
   flex: 1;
   overflow-y: auto;
-  padding: 14px 16px !important;
+  padding: 12px 16px !important;
 }
 .card-scroll-body::-webkit-scrollbar {
   width: 4px;
@@ -1192,7 +1454,7 @@ export default {
   font-weight: 700;
   color: #4b5a7a;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.5px;
 }
 
 /* ── STYLED INPUTS ── */
@@ -1321,140 +1583,7 @@ export default {
   border-radius: 4px;
 }
 
-.ocr-card {
-  flex-shrink: 0;
-}
-.form-inputs-card {
-  flex: 1;
-  min-height: 0;
-}
-
-/* ── OCR BANNER ── */
-.ocr-banner {
-  background: #f0fdfa !important;
-  border: 1px solid #99f6e4;
-  border-radius: 10px !important;
-  font-size: 12px;
-}
-.ocr-banner-text {
-  font-size: 12px;
-  color: #0f766e;
-}
-/* CHANGED: banner state variants */
-.ocr-banner--error {
-  background: #fff5f5 !important;
-  border-color: #fca5a5 !important;
-}
-.ocr-banner--success {
-  background: #f0fdf4 !important;
-  border-color: #86efac !important;
-}
-.ocr-progress {
-  margin-top: 4px;
-  border-radius: 4px;
-}
-.ocr-upload-label {
-  font-size: 12px;
-}
-
-/* CHANGED: OCR extracted field chips */
-.ocr-raw-wrap {
-  border: 1px solid #fed7aa;
-  border-radius: 8px;
-  padding: 8px 10px;
-  background: #fff7ed;
-}
-.ocr-raw-label {
-  font-size: 10px;
-  font-weight: 700;
-  color: #92400e;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 4px;
-}
-.ocr-raw-text {
-  font-size: 11px;
-  color: #374151;
-  white-space: pre-wrap;
-  max-height: 120px;
-  overflow-y: auto;
-  line-height: 1.5;
-}
-
-.ocr-fields-wrap {
-  border: 1px solid #d1fae5;
-  border-radius: 10px;
-  padding: 10px;
-  background: #f0fdf4;
-}
-.ocr-fields-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-.ocr-fields-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: #065f46;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.ocr-chip-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.ocr-chip {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  padding: 5px 22px 5px 8px;
-  border: 1px solid #a7f3d0;
-  border-radius: 8px;
-  cursor: pointer;
-  background: #ffffff;
-  transition:
-    border-color 0.15s,
-    background 0.15s;
-  min-width: 90px;
-  max-width: 160px;
-}
-.ocr-chip:hover {
-  border-color: #10b981;
-  background: #ecfdf5;
-}
-.ocr-chip--applied {
-  border-color: #10b981 !important;
-  background: #d1fae5 !important;
-}
-.ocr-chip__label {
-  font-size: 9px;
-  font-weight: 700;
-  color: #6b7280;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  margin-bottom: 1px;
-}
-.ocr-chip__value {
-  font-size: 11px;
-  color: #111827;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ocr-chip__icon {
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  color: #9ca3af;
-}
-.ocr-chip--applied .ocr-chip__icon {
-  color: #10b981;
-}
-
-/* ── FORM INPUTS ── */
+/* ── POLICY DETAIL INPUTS ── */
 .input-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1564,6 +1693,167 @@ export default {
 
 :deep(.tg-editor .q-editor__content .email-signature p) {
   margin: 4px 0;
+}
+
+/* ── ATTACHMENT PREVIEWS ── */
+.attach-preview-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.attach-preview-card {
+  position: relative;
+  width: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  background: #f8faff;
+  border: 1.5px solid #dbeafe;
+  border-radius: 10px;
+  padding: 6px 6px 5px;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+.attach-preview-card:hover {
+  transform: scale(1.05);
+  border-color: #93c5fd;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.18);
+}
+.attach-preview-thumb {
+  width: 60px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 7px;
+  display: block;
+}
+.attach-preview-icon-wrap {
+  width: 60px;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #eff6ff;
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+.attach-preview-name {
+  font-size: 9px;
+  font-weight: 600;
+  color: #4b5a7a;
+  text-align: center;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.attach-preview-size {
+  font-size: 8.5px;
+  color: #94a3b8;
+  line-height: 1;
+}
+.attach-remove-btn {
+  position: absolute !important;
+  top: -6px !important;
+  right: -6px !important;
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 50% !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important;
+}
+
+/* ── LIGHTBOX ── */
+.lightbox-overlay {
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.93);
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+.lightbox-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(0, 0, 0, 0.45);
+  flex-shrink: 0;
+}
+.lightbox-filename {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lightbox-counter {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
+}
+.lightbox-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-height: 0;
+  padding: 8px 0;
+}
+.lightbox-nav-btn {
+  width: 52px !important;
+  height: 52px !important;
+  flex-shrink: 0;
+  margin: 0 12px;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 50% !important;
+  transition: background 0.15s !important;
+}
+.lightbox-nav-btn:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.18) !important;
+}
+.lightbox-content {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+.lightbox-pdf {
+  width: 100%;
+  height: 100%;
+  border: none;
+  border-radius: 4px;
+}
+.lightbox-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.lightbox-fallback-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+.lightbox-fallback-size {
+  font-size: 13px;
+  color: #64748b;
 }
 
 /* ── RESPONSIVE ── */

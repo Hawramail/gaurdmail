@@ -12,11 +12,6 @@
           <div class="live-dot" />
           Live
         </div>
-        <q-btn
-          outline color="negative" label="Run Attack Simulation"
-          icon="play_arrow" no-caps dense class="sim-btn"
-          @click="handleSimulation" :loading="simulating"
-        />
       </div>
     </div>
 
@@ -177,12 +172,22 @@
           <q-card-section class="sim-section">
             <div class="sim-label">Attack simulator</div>
             <div class="sim-desc">
-              Trigger simulated anomalies to test all 6 detection rules and verify the dashboard responds correctly.
+              Trigger simulated anomalies to test all 6 detection rules. Clear removes all demo events and alerts — real events are never deleted.
             </div>
             <q-btn
               unelevated color="dark" label="Run Attack Simulation" icon="play_arrow"
               no-caps class="sim-full-btn q-mt-sm"
               :loading="simulating" @click="handleSimulation"
+            />
+            <q-btn
+              outline color="warning" label="Clear Demo Data" icon="cleaning_services"
+              no-caps class="sim-full-btn q-mt-xs"
+              :loading="clearing" @click="handleClear"
+            />
+            <q-btn
+              outline color="negative" label="Reset — Wipe All Data" icon="delete_sweep"
+              no-caps class="sim-full-btn q-mt-xs"
+              :loading="resetting" @click="handleReset"
             />
           </q-card-section>
 
@@ -218,9 +223,13 @@ const {
   acknowledgeAlert,
   resolveAlert,
   runSimulation,
+  clearSimData,
+  clearAllData,
 } = useSiem()
 
 const simulating   = ref(false)
+const clearing     = ref(false)
+const resetting    = ref(false)
 const loadingAlert = ref(null)
 
 const severityFilterOptions = [
@@ -262,6 +271,30 @@ async function handleSimulation () {
     simulating.value = false
   }
 }
+
+async function handleClear () {
+  clearing.value = true
+  try {
+    await clearSimData()
+    $q.notify({ type: 'positive', message: 'Demo data cleared — only real events remain', icon: 'cleaning_services' })
+  } catch {
+    $q.notify({ type: 'negative', message: 'Failed to clear demo data', icon: 'error' })
+  } finally {
+    clearing.value = false
+  }
+}
+
+async function handleReset () {
+  resetting.value = true
+  try {
+    await clearAllData()
+    $q.notify({ type: 'warning', message: 'All data cleared — clean slate', icon: 'delete_sweep', timeout: 4000 })
+  } catch {
+    $q.notify({ type: 'negative', message: 'Failed to reset data', icon: 'error' })
+  } finally {
+    resetting.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -276,7 +309,6 @@ async function handleSimulation () {
 .live-indicator   { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #16a34a; background: #f0fdf4; border: 1px solid #bbf7d0; padding: 4px 12px; border-radius: 20px; }
 .live-dot         { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; animation: blink 1.4s infinite; }
 @keyframes blink  { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-.sim-btn          { border-radius: 8px !important; font-weight: 600 !important; font-size: 12px !important; }
 
 /* ── STAT CARDS ── */
 .stat-grid        { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
