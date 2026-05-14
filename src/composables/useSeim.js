@@ -113,6 +113,27 @@ export function useSiem () {
     },
   }
 
+  // ── Timestamp helpers ──────────────────────────────────────────────────────
+  // Handles both Firestore Timestamp objects (frontend writes) and ISO strings (backend REST writes)
+  function resolveTs (raw) {
+    if (!raw) return null
+    if (typeof raw.toDate === 'function') return raw.toDate()
+    const d = new Date(raw)
+    return isNaN(d.getTime()) ? null : d
+  }
+
+  function formatTs (date) {
+    return date.toLocaleString('en-GB', {
+      day:    '2-digit',
+      month:  'short',
+      year:   'numeric',
+      hour:   '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
+  }
+
   // ── Firebase subscriptions ─────────────────────────────────────────────────
   function subscribeEvents () {
     const q = query(
@@ -124,7 +145,7 @@ export function useSiem () {
     eventsUnsub = onSnapshot(q, snap => {
       events.value = snap.docs.map(d => {
         const data   = d.data()
-        const tsDate = data.timestamp?.toDate?.()
+        const tsDate = resolveTs(data.timestamp)
 
         return {
           id:        d.id,
@@ -132,7 +153,7 @@ export function useSiem () {
           userId:    data.userId    ?? '—',
           severity:  data.severity  ?? 'low',
           metadata:  formatMetadata(data.metadata),
-          timestamp: tsDate ? tsDate.toLocaleTimeString() : '—',
+          timestamp: tsDate ? formatTs(tsDate) : '—',
           _rawMs:    tsDate ? tsDate.getTime() : null,
           anomalyRuleTriggered: data.anomalyRuleTriggered ?? null,
         }
@@ -157,7 +178,7 @@ export function useSiem () {
           severity:    data.severity    ?? 'low',
           status:      data.status      ?? 'open',
           userId:      data.userId      ?? '—',
-          time:        data.timestamp?.toDate?.()?.toLocaleTimeString() ?? '—',
+          time:        (() => { const d = resolveTs(data.timestamp); return d ? formatTs(d) : '—' })(),
         }
       })
     })

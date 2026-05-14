@@ -3,21 +3,29 @@
 
 import { ref } from 'vue'
 
-export function getSiemUserId () {
-  return localStorage.getItem('siem_user_email') || 'staff_user'
-}
-
 const CLIENT_ID    = '1000.S3IJADF48CR3220NYR50SPRMF8OG2I'
 const REDIRECT_URL = 'http://localhost:9000/redirect.html'
 const SCOPE        = 'ZohoMail.messages.ALL,ZohoMail.accounts.READ,ZohoMail.folders.ALL'
-const API_BASE = 'http://127.0.0.1:8000/api'
+const API_BASE     = 'http://127.0.0.1:8000/api'
+
+// ── Token helpers (exported so other modules can read identity) ───────────────
+
+export function getSiemUserId() {
+  return localStorage.getItem('siem_user_email') || 'staff_user'
+}
+
+export function getSanctumToken() {
+  return localStorage.getItem('sanctum_token')
+}
+
+// ── Composable ────────────────────────────────────────────────────────────────
 
 export function useZoho() {
   const isSending   = ref(false)
   const mergeStatus = ref(null) // null | 'merging' | 'done' | 'error'
   const sendError   = ref(null)
 
-  // ── Auth ──────────────────────────────────────────────────────────
+  // ── Auth ──────────────────────────────────────────────────────────────────
   function authZoho() {
     const url =
       `https://accounts.zoho.com/oauth/v2/auth` +
@@ -40,7 +48,7 @@ export function useZoho() {
     const token = getToken()
     if (!token) return false
     const savedAt = localStorage.getItem('zoho_token_saved_at')
-    if (!savedAt) return true // assume valid if no timestamp saved
+    if (!savedAt) return true
     const ageMinutes = (Date.now() - parseInt(savedAt)) / 60000
     return ageMinutes < 55
   }
@@ -54,23 +62,38 @@ export function useZoho() {
   function clearSession() {
     localStorage.removeItem('zoho_access_token')
     localStorage.removeItem('zoho_token_saved_at')
+    localStorage.removeItem('sanctum_token')
+    localStorage.removeItem('siem_user_email')
   }
 
-  // ── Send Email ────────────────────────────────────────────────────
+  // ── Send Email ────────────────────────────────────────────────────────────
   // @param {Object} params
-  //   to          string[]  — TO addresses array
-  //   cc          string[]  — CC addresses array
-  //   subject     string
-  //   content         string    — rendered HTML template string
-  //   attachments     File[]    — raw File objects from q-file
-  //   attachmentMode  string    — 'merge' | 'separate'
-  async function sendEmail({ to, cc, subject, content, attachments = [], attachmentMode = 'merge' }) {
+  //   to             string[]  — TO addresses
+  //   cc             string[]  — CC addresses
+  //   subject        string
+  //   content        string    — rendered HTML
+  //   attachments    File[]    — raw File objects
+  //   attachmentMode string    — 'merge' | 'separate'
+  //   company        string    — company name (for SIEM log)
+  //   template       string    — template key (for SIEM log)
+  async function sendEmail({
+    to,
+    cc,
+    subject,
+    content,
+    attachments = [],
+    attachmentMode = 'merge',
+    company = '',
+    template = '',
+  }) {
     sendError.value   = null
     isSending.value   = true
     mergeStatus.value = null
 
-    const token = getToken()
-    if (!token) {
+    const zohoToken   = getToken()
+    const sanctumToken = getSanctumToken()
+
+    if (!zohoToken) {
       sendError.value = 'Not authenticated with Zoho. Please click Auth Email first.'
       isSending.value = false
       throw new Error(sendError.value)
@@ -79,9 +102,12 @@ export function useZoho() {
     try {
       // Step 1 — Get Zoho account info
       const accountRes = await fetch(`${API_BASE}/zoho/accounts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
+        method:  'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${sanctumToken}`,
+        },
+        body: JSON.stringify({ token: zohoToken }),
       })
 
       if (!accountRes.ok) {
@@ -92,13 +118,13 @@ export function useZoho() {
       const { accountId, mailboxAddress } = await accountRes.json()
       localStorage.setItem('siem_user_email', mailboxAddress)
 
-      // Step 2 — Build FormData (multipart so files travel together)
+      // Step 2 — Build FormData
       if (attachments.length > 0) {
         mergeStatus.value = 'merging'
       }
 
       const formData = new FormData()
-      formData.append('token',          token)
+      formData.append('token',          zohoToken)
       formData.append('accountId',      accountId)
       formData.append('fromAddress',    mailboxAddress)
       formData.append('toAddress',      Array.isArray(to) ? to.join(',') : to)
@@ -106,17 +132,23 @@ export function useZoho() {
       formData.append('subject',        subject)
       formData.append('htmlBody',       content)
       formData.append('attachmentMode', attachmentMode)
+      // Passed through to LogSecurityEvent middleware for accurate SIEM context
+      formData.append('company',        company)
+      formData.append('template',       template)
 
       for (const file of attachments) {
         formData.append('files[]', file)
       }
 
-      // Step 3 — Send (Laravel handles merge + Zoho send)
+      // Step 3 — Send (Laravel merges attachments + calls Zoho)
       const sendRes = await fetch(`${API_BASE}/zoho/sendEmailwAttachments`, {
-        method: 'POST',
-        headers: { 'Accept': 'application/json' },
+        method:  'POST',
+        headers: {
+          'Accept':        'application/json',
+          'Authorization': `Bearer ${sanctumToken}`,
+          // NOTE: Do NOT set Content-Type — browser sets it with boundary automatically
+        },
         body: formData,
-        // NOTE: Do NOT set Content-Type — browser sets it with boundary automatically
       })
 
       const result = await sendRes.json()
@@ -124,7 +156,7 @@ export function useZoho() {
       if (!sendRes.ok) {
         if (sendRes.status === 422 && result.errors) {
           const firstField = Object.keys(result.errors)[0]
-          const firstMsg = result.errors[firstField][0]
+          const firstMsg   = result.errors[firstField][0]
           throw new Error(`Validation failed — ${firstField}: ${firstMsg}`)
         }
         throw new Error(result.error || result.message || 'Send failed')
@@ -132,13 +164,13 @@ export function useZoho() {
 
       mergeStatus.value = attachments.length > 0 ? 'done' : null
       isSending.value   = false
-      return { success: true }
+      return { success: true, zohoMessageId: result.zohoMessageId ?? null }
 
     } catch (err) {
       sendError.value   = err.message
       mergeStatus.value = attachments.length > 0 ? 'error' : null
       isSending.value   = false
-      throw err // re-throw so handleSendEmail catch block works
+      throw err
     }
   }
 

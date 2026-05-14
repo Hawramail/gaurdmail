@@ -354,16 +354,6 @@
           <q-separator class="soft-sep" />
 
           <q-card-section class="card-scroll-body q-gutter-sm">
-            <q-btn
-              unelevated
-              color="teal-7"
-              icon="document_scanner"
-              label="Scan Documents via OCR"
-              no-caps
-              class="full-width-btn"
-              @click="ocrDialogOpen = true"
-            />
-
             <!-- ─ Customer ─ -->
             <div class="inner-section-label">
               <q-icon name="person_outline" size="12px" />
@@ -475,12 +465,12 @@
 
             <q-btn
               unelevated
-              color="indigo-7"
-              label="Apply Details to Template"
-              icon="auto_fix_high"
+              color="teal-7"
+              icon="document_scanner"
+              label="Scan Documents via OCR"
               no-caps
               class="full-width-btn"
-              @click="setInfoInMail"
+              @click="ocrDialogOpen = true"
             />
 
             <q-btn
@@ -564,8 +554,6 @@ import { useZoho } from "src/composables/useZoho";
 import { useSentEmails } from "src/composables/useSentEmails";
 import OcrUploadDialog from "src/components/OcrUploadDialog.vue";
 import { useBahrainLookup } from "src/composables/useBahrainLookup";
-import { logSiemEvent } from "src/composables/useSeim";
-import { getSiemUserId } from "src/composables/useZoho";
 import { validateFile } from "src/composables/useFileValidation";
 
 export default {
@@ -613,6 +601,7 @@ export default {
         { label: "Issue New Policy", value: "issueNewPolicy" },
         { label: "Change Issued Cover", value: "changeIssuedCover" },
         { label: "Policy Transfer", value: "policyTransfer" },
+        { label: "Endorsement / Cancellation", value: "endorsementCancellation" },
       ],
 
       governmentTypeOptions: [
@@ -653,6 +642,9 @@ export default {
         startDate: "",
         expiryDate: "",
         governmentType: null,
+        endorsementType: "",
+        reason: "",
+        effectiveDate: "",
       },
 
       editorToolbar: [
@@ -757,14 +749,10 @@ export default {
   methods: {
     onFieldsConfirmed(fields) {
       // Non-customer fields: simple 1-to-1 mapping
+      // Dates are intentionally excluded — let Bahrain Traffic Lookup fill them
       const simpleMap = {
         vehicle_reg_number: "plateNo",
         chassis_number: "chassisNo",
-        policy_start_date: "startDate",
-        license_issue_date: "startDate",
-        policy_end_date: "expiryDate",
-        expiry_date: "expiryDate",
-        renewal_date: "expiryDate",
       };
       for (const [ocrKey, formKey] of Object.entries(simpleMap)) {
         if (fields[ocrKey] == null) continue;
@@ -798,12 +786,10 @@ export default {
         if (matchedType) this.formInputs.governmentType = matchedType.value;
       }
 
-      // ── Policy holder derivation (4 cases from ownership cert) ────────────
+      // ── Policy holder derivation (3 cases from ownership cert) ────────────
       const ownerName       = fields.owner_name || fields.full_name || "";
       const cprNumber       = fields.cpr_number    || "";
       const crNumber        = fields.cr_number     || "";
-      const companyName     = fields.company_name  || "";
-      const bankName        = fields.bank_name     || "";
       const ownershipStatus = fields.ownership_status; // 'cash' | 'installment' | null
 
       const BANK_KEYWORDS = [
@@ -815,29 +801,26 @@ export default {
 
       const ownerIsBank    = ownerName && BANK_KEYWORDS.some(k => ownerName.toUpperCase().includes(k));
       const ownerIsCompany = ownerName && COMPANY_SUFFIXES.some(s => ownerName.toUpperCase().includes(s));
-      const isCompany      = !!(crNumber || companyName || ownerIsCompany);
-      // If the owner IS a bank/finance entity, infer installment even without the ownership_status field
-      const isInstallment  = ownershipStatus === "installment" || (!!bankName && !ownerIsBank) || ownerIsBank;
-      // When the bank is the registered owner (Case 3), treat ownerName as the effective bank name
-      const effectiveBankName = bankName || (ownerIsBank ? ownerName : "");
+      const isInstallment  = ownershipStatus === "installment";
+      const personalId     = fields.personal_id_number || "";
+      const cprDigits      = cprNumber.replace(/\D/g, "");
+      // CR number: not exactly 9 digits, OR doesn't match the civil ID personal ID number
+      const cprIsCompany   = cprDigits.length > 0 && cprDigits.length !== 9;
+      const cprMismatch    = !!(personalId && cprNumber && personalId !== cprNumber);
+      const ownerIsEntity  = ownerIsBank || ownerIsCompany || !!crNumber || cprIsCompany || cprMismatch;
 
-      if (isCompany) {
-        // Case 4: Company vehicle — use CR, not CPR
-        this.formInputs.customerName     = companyName || ownerName;
-        this.formInputs.customerCPR      = crNumber;
-        this.formInputs.underCompanyName = true;
-      } else if (isInstallment && effectiveBankName && ownerName && !ownerIsBank) {
-        // Case 2: Installment — joint: customerName & bankName
-        this.formInputs.customerName     = `${ownerName} & ${effectiveBankName}`;
+      if (ownerIsEntity) {
+        // Case 3: company / bank is the registered owner (entity signals alone are sufficient)
+        this.formInputs.customerName     = ownerName;
         this.formInputs.customerCPR      = cprNumber;
-        this.formInputs.underCompanyName = false;
-      } else if (isInstallment && (ownerIsBank || (effectiveBankName && !ownerName))) {
-        // Case 3: Installment — bank/finance company is the registered owner
-        this.formInputs.customerName     = effectiveBankName || ownerName;
+        this.formInputs.underCompanyName = true;
+      } else if (isInstallment) {
+        // Case 2: installment + individual customer name
+        this.formInputs.customerName     = ownerName;
         this.formInputs.customerCPR      = cprNumber;
         this.formInputs.underCompanyName = false;
       } else {
-        // Case 1: Cash / personal ownership — individual owner
+        // Case 1: cash / individual ownership
         this.formInputs.customerName     = ownerName;
         this.formInputs.customerCPR      = cprNumber;
         this.formInputs.underCompanyName = false;
@@ -892,7 +875,6 @@ export default {
       // Session check before anything
       if (!this.isTokenValid()) {
         this.clearSession();
-        logSiemEvent("ZOHO_TOKEN_FAILURE", getSiemUserId(), { message: "Session expired before send" }, "medium").catch(() => {});
         this.$q.notify({
           type: "warning",
           message:
@@ -918,42 +900,31 @@ export default {
             : [this.form.attachments]
           : [];
 
-        await this.sendEmail({
-          to: this.form.to,
-          cc: this.form.cc,
-          subject: this.form.subject,
-          content: this.form.content,
+        const companyName =
+          this.companies.find((c) => c.id === this.form.company)?.name || "";
+
+        const { zohoMessageId } = await this.sendEmail({
+          to:             this.form.to,
+          cc:             this.form.cc,
+          subject:        this.form.subject,
+          content:        this.form.content,
           attachments,
           attachmentMode: this.form.attachmentMode,
+          company:        companyName,
+          template:       this.form.template || "",
         });
 
         await this.saveSentEmail({
-          to: this.form.to,
-          cc: this.form.cc,
-          subject: this.form.subject,
-          template: this.form.template,
-          companyId: this.form.company,
-          companyName:
-            this.companies.find((c) => c.id === this.form.company)?.name || "",
+          to:              this.form.to,
+          cc:              this.form.cc,
+          subject:         this.form.subject,
+          template:        this.form.template,
+          companyId:       this.form.company,
+          companyName,
           attachmentCount: attachments.length,
+          user:            localStorage.getItem("siem_user_email") || "staff",
+          zohoMessageId:   zohoMessageId || null,
         });
-
-        const totalSizeBytes = attachments.reduce((s, f) => s + (f.size || 0), 0);
-        logSiemEvent("EMAIL_SENT", getSiemUserId(), {
-          company: this.companies.find((c) => c.id === this.form.company)?.name || "",
-          template: this.form.template,
-          attachmentCount: attachments.length,
-          totalSizeBytes,
-        }, "low").catch(() => {});
-
-        if (totalSizeBytes > 10 * 1024 * 1024) {
-          logSiemEvent("FILE_UPLOAD", getSiemUserId(), {
-            attachmentCount: attachments.length,
-            totalSizeBytes,
-            sizeMB: (totalSizeBytes / 1024 / 1024).toFixed(1),
-            message: `${(totalSizeBytes / 1024 / 1024).toFixed(1)} MB upload attached to email`,
-          }, totalSizeBytes > 15 * 1024 * 1024 ? "high" : "medium").catch(() => {});
-        }
 
         this.$q.notify({
           type: "positive",
@@ -963,7 +934,6 @@ export default {
       } catch (err) {
         if (err.message === "SESSION_EXPIRED") {
           this.clearSession();
-          logSiemEvent("ZOHO_TOKEN_FAILURE", getSiemUserId(), { message: "Session expired during send" }, "medium").catch(() => {});
           this.$q.notify({
             type: "warning",
             message: "Zoho session expired. Please re-authorise.",
@@ -1012,6 +982,7 @@ export default {
         issueNewPolicy: "Issue New Policy Request",
         changeIssuedCover: "Change Issued Cover Request",
         policyTransfer: "Policy Transfer Request",
+        endorsementCancellation: "Endorsement / Cancellation Request",
       };
       this.form.subject = subjects[this.form.template] || "";
     },
@@ -1042,6 +1013,9 @@ export default {
         expiryDate: this.formInputs.expiryDate,
         governmentType: this.getGovernmentTypeLabel(),
         underCompanyName: this.formInputs.underCompanyName,
+        endorsementType: this.formInputs.endorsementType,
+        reason: this.formInputs.reason,
+        effectiveDate: this.formInputs.effectiveDate,
       });
     },
 
@@ -1162,6 +1136,9 @@ export default {
         startDate: "",
         expiryDate: "",
         governmentType: null,
+        endorsementType: "",
+        reason: "",
+        effectiveDate: "",
       };
     },
 
@@ -1197,11 +1174,6 @@ export default {
       for (const file of list) {
         const result = validateFile(file, 'email');
         if (!result.ok) {
-          logSiemEvent('FILE_REJECTED', getSiemUserId(), {
-            filename: file.name,
-            fileSize: file.size,
-            reason:   result.reason,
-          }, 'medium').catch(() => {});
           this.$q.notify({
             type:    'negative',
             message: `${file.name} rejected — ${result.reason}`,

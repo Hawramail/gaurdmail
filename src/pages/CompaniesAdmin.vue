@@ -170,8 +170,6 @@
 
 <script>
 import { useCompanies } from "src/composables/useCompanies";
-import { logSiemEvent } from "src/composables/useSeim";
-import { getSiemUserId } from "src/composables/useZoho";
 
 export default {
   name: "CompaniesAdmin",
@@ -241,11 +239,6 @@ export default {
         } else {
           await this.addCompany({ ...this.form });
         }
-        logSiemEvent("ADMIN_CONFIG_CHANGED", getSiemUserId(), {
-          action,
-          companyName: this.form.name,
-          message: `Company ${action}: ${this.form.name}`,
-        }, "low").catch(() => {});
         this.dialog = false;
         this.$q.notify({ type: "positive", message: "Company saved", icon: "check" });
       } catch (err) {
@@ -260,11 +253,6 @@ export default {
       if (!confirmed) return;
       try {
         await this.removeCompany(id);
-        logSiemEvent("ADMIN_CONFIG_CHANGED", getSiemUserId(), {
-          action: "deleted",
-          companyId: id,
-          message: "Company deleted",
-        }, "medium").catch(() => {});
         this.$q.notify({ type: "negative", message: "Company deleted", icon: "delete" });
       } catch (err) {
         this.$q.notify({ type: "negative", message: "Failed to delete: " + err.message });

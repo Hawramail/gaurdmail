@@ -1,20 +1,68 @@
 <!DOCTYPE html>
 <html>
-<head><title>Authorizing...</title></head>
+<head>
+  <title>Authorizing...</title>
+  <style>
+    body { font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f8faff; }
+    .box { text-align: center; }
+    .icon { font-size: 48px; }
+    h2 { color: #0f1f3d; margin: 12px 0 6px; }
+    p  { color: #64748b; font-size: 14px; }
+  </style>
+</head>
 <body>
-<script>
-  // Grab token from hash
-  const hash = window.location.hash.substring(1);
-  const params = new URLSearchParams(hash);
-  const token = params.get("access_token");
+<div class="box" id="msg">
+  <div class="icon">⏳</div>
+  <h2>Completing authorisation…</h2>
+  <p>Please wait.</p>
+</div>
 
-  if (token) {
-    localStorage.setItem("zoho_access_token", token);
-    localStorage.setItem("zoho_token_saved_at", Date.now().toString());
-    document.write("<h2 style='font-family:sans-serif;text-align:center;margin-top:100px'>✅ You are authorized to send Mails. You can close this tab.</h2>");
-  } else {
-    document.write("<h2 style='font-family:sans-serif;text-align:center;margin-top:100px'>❌ Authorization failed. Please try again.</h2>");
+<script>
+  const API_BASE = 'http://127.0.0.1:8000/api';
+
+  function show(icon, title, sub) {
+    document.getElementById('msg').innerHTML =
+      `<div class="icon">${icon}</div><h2>${title}</h2><p>${sub}</p>`;
   }
+
+  (async function () {
+    // Zoho returns the token as a hash fragment
+    const hash   = window.location.hash.replace(/^#/, '');
+    const params = new URLSearchParams(hash);
+    const zohoToken = params.get('access_token');
+
+    if (!zohoToken) {
+      show('❌', 'Authorisation failed.', 'No token found. Please try again.');
+      return;
+    }
+
+    // Persist the raw Zoho token for direct Zoho API calls
+    localStorage.setItem('zoho_access_token', zohoToken);
+    localStorage.setItem('zoho_token_saved_at', Date.now().toString());
+
+    // Exchange the Zoho token for a Sanctum session token.
+    // The backend verifies the token with Zoho — this is where identity is established.
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ token: zohoToken }),
+      });
+
+      if (res.ok) {
+        const { token, mailboxAddress } = await res.json();
+        localStorage.setItem('sanctum_token',   token);
+        localStorage.setItem('siem_user_email', mailboxAddress);
+        show('✅', 'You are authorised.', `Signed in as ${mailboxAddress}. You can close this tab.`);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        show('⚠️', 'Partially authorised.', `Zoho token saved, but session could not be established: ${err.error || res.status}. Try closing and re-authorising.`);
+      }
+    } catch (e) {
+      // API unreachable — Zoho token is saved, Sanctum token is not
+      show('⚠️', 'Partially authorised.', 'Zoho token saved but the API server is unreachable. Ensure the Laravel server is running, then re-authorise.');
+    }
+  })();
 </script>
 </body>
 </html>

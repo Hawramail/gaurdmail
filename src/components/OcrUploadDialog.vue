@@ -73,34 +73,41 @@
                       <q-icon :name="side === 'front' ? 'flip_to_front' : 'flip_to_back'" size="10px" />
                       {{ side === 'front' ? 'Front' : 'Back' }}
                     </div>
-                    <label
+                    <div
                       class="photo-zone"
                       :class="{
                         'photo-zone--filled': doc[side].file,
                         'photo-zone--scanning': doc[side].status === 'ocr_running',
                         'photo-zone--err': doc[side].status === 'error',
                       }"
-                      @click.stop
+                      @click.stop="!doc[side].file && triggerFileInput(doc.id, side)"
                     >
                       <input type="file" accept=".jpg,.jpeg,.png,.pdf" class="upload-input"
+                        :ref="el => setInputRef(doc.id, side, el)"
                         @change="e => { activeDocId = doc.id; onFileChange(e, side) }" />
                       <template v-if="!doc[side].file">
                         <q-icon name="add_a_photo" size="24px" color="blue-4" />
                         <span class="pz-hint">Add photo</span>
                       </template>
                       <template v-else>
-                        <img v-if="doc[side].previewUrl" :src="doc[side].previewUrl" class="pz-thumb" />
+                        <img v-if="doc[side].previewUrl" :src="doc[side].previewUrl" class="pz-thumb"
+                          @click.stop="openPreview(doc[side].previewUrl)" />
                         <q-icon v-else name="picture_as_pdf" size="26px" color="positive" />
                         <div v-if="doc[side].status === 'ocr_running'" class="pz-scanning">
                           <q-circular-progress indeterminate size="22px" color="white" track-color="transparent" />
                           <span class="pz-scan-txt">Scanning…</span>
                         </div>
                         <div class="pz-hover">
-                          <q-icon name="photo_camera" size="13px" />
-                          Replace
+                          <span class="pz-action" @click.stop="openPreview(doc[side].previewUrl)">
+                            <q-icon name="visibility" size="13px" /> Preview
+                          </span>
+                          <span class="pz-action-sep">|</span>
+                          <span class="pz-action" @click.stop="triggerFileInput(doc.id, side)">
+                            <q-icon name="photo_camera" size="13px" /> Replace
+                          </span>
                         </div>
                       </template>
-                    </label>
+                    </div>
                     <div v-if="doc[side].status === 'error'" class="pz-err">
                       <q-icon name="error_outline" size="11px" /> OCR failed
                     </div>
@@ -117,16 +124,17 @@
 
                 <!-- Single-sided: one large photo zone -->
                 <div v-else class="photo-single">
-                  <label
+                  <div
                     class="photo-zone photo-zone--wide"
                     :class="{
                       'photo-zone--filled': doc.front.file,
                       'photo-zone--scanning': doc.front.status === 'ocr_running',
                       'photo-zone--err': doc.front.status === 'error',
                     }"
-                    @click.stop
+                    @click.stop="!doc.front.file && triggerFileInput(doc.id, 'front')"
                   >
                     <input type="file" accept=".jpg,.jpeg,.png,.pdf" class="upload-input"
+                      :ref="el => setInputRef(doc.id, 'front', el)"
                       @change="e => { activeDocId = doc.id; onFileChange(e, 'front') }" />
                     <template v-if="!doc.front.file">
                       <q-icon name="add_a_photo" size="30px" color="blue-4" />
@@ -134,18 +142,24 @@
                       <span class="pz-sub">JPG · PNG · PDF</span>
                     </template>
                     <template v-else>
-                      <img v-if="doc.front.previewUrl" :src="doc.front.previewUrl" class="pz-thumb pz-thumb--wide" />
+                      <img v-if="doc.front.previewUrl" :src="doc.front.previewUrl" class="pz-thumb pz-thumb--wide"
+                        @click.stop="openPreview(doc.front.previewUrl)" />
                       <q-icon v-else name="picture_as_pdf" size="32px" color="positive" />
                       <div v-if="doc.front.status === 'ocr_running'" class="pz-scanning">
                         <q-circular-progress indeterminate size="26px" color="white" track-color="transparent" />
                         <span class="pz-scan-txt">Scanning…</span>
                       </div>
                       <div class="pz-hover">
-                        <q-icon name="photo_camera" size="15px" />
-                        Replace
+                        <span class="pz-action" @click.stop="openPreview(doc.front.previewUrl)">
+                          <q-icon name="visibility" size="15px" /> Preview
+                        </span>
+                        <span class="pz-action-sep">|</span>
+                        <span class="pz-action" @click.stop="triggerFileInput(doc.id, 'front')">
+                          <q-icon name="photo_camera" size="15px" /> Replace
+                        </span>
                       </div>
                     </template>
-                  </label>
+                  </div>
                   <div v-if="doc.front.status === 'error'" class="pz-err pz-err--banner">
                     <q-icon name="error_outline" size="13px" /> OCR failed — try a clearer image
                   </div>
@@ -229,6 +243,21 @@
             </template>
           </div>
 
+          <!-- ── Cross-Validation Warning ── -->
+          <div v-if="crossValidation.length" class="cv-card">
+            <div class="cv-hdr">
+              <q-icon name="warning_amber" size="13px" />
+              Document Mismatch Detected
+            </div>
+            <div v-for="(c, i) in crossValidation" :key="i" class="cv-row">
+              <span class="cv-field">{{ c.field }}</span>
+              <div class="cv-detail">
+                <div><span class="cv-doc">{{ c.docA }}</span>: {{ c.valA }}</div>
+                <div><span class="cv-doc">{{ c.docB }}</span>: {{ c.valB }}</div>
+              </div>
+            </div>
+          </div>
+
           <!-- ── ALL EXTRACTED FIELDS ── -->
           <div class="fields-panel">
             <div class="fp-hdr">
@@ -292,13 +321,25 @@
 
     </q-card>
   </q-dialog>
+
+  <!-- ── Image Preview Lightbox ── -->
+  <q-dialog v-model="previewOpen" maximized>
+    <div class="ocr-lightbox" @click.self="previewOpen = false">
+      <div class="ocr-lb-topbar">
+        <span class="ocr-lb-title">Image Preview</span>
+        <q-btn flat round dense icon="close" color="white" size="sm" @click="previewOpen = false" />
+      </div>
+      <div class="ocr-lb-body">
+        <img :src="previewImgUrl" class="ocr-lb-img" />
+      </div>
+    </div>
+  </q-dialog>
 </template>
 
 <script setup>
 import { ref, computed } from 'vue'
 import { useQuasar } from 'quasar'
-import { logSiemEvent } from 'src/composables/useSeim'
-import { getSiemUserId } from 'src/composables/useZoho'
+import { getSanctumToken } from 'src/composables/useZoho'
 import { validateFile } from 'src/composables/useFileValidation'
 
 const props = defineProps({ modelValue: Boolean })
@@ -320,7 +361,7 @@ const DOC_SCHEMAS = {
     frontFields: ['full_name','personal_id_number','nationality'],
     backFields:  ['gender','date_of_birth','expiry_date'] },
   vehicle_ownership:{ label: 'Vehicle Ownership',   hasSides: true,
-    frontFields: ['owner_name','cr_number','cpr_number','vehicle_reg_number','registration_type','bank_name'],
+    frontFields: ['owner_name','cr_number','cpr_number','vehicle_reg_number','registration_type'],
     backFields:  ['ownership_status','chassis_number','make','model','year_of_make','engine_capacity_cc','number_of_seats','cylinders'] },
   driving_license:  { label: 'Driving License',     hasSides: true,
     frontFields: ['owner_name','license_number'],
@@ -385,51 +426,91 @@ const mergedFields = computed(() => {
 
 const detectedCase = computed(() => {
   const f = mergedFields.value
-  const ownerName = f.owner_name || f.full_name || ''
-  const cprNumber = f.cpr_number || ''
-  const crNumber  = f.cr_number  || ''
-  const companyName    = f.company_name  || ''
-  const bankName       = f.bank_name     || ''
+  const ownerName      = f.owner_name || f.full_name || ''
+  const cprNumber      = f.cpr_number || ''
+  const crNumber       = f.cr_number  || ''
   const ownershipStatus = f.ownership_status
 
-  if (!ownerName && !cprNumber && !crNumber && !companyName) return {
+  if (!ownerName && !cprNumber && !crNumber) return {
     type:'none', icon:'manage_search', color:'#94a3b8', bg:'#f8faff', border:'#e2e8f0',
     title:'SCAN DOCUMENTS TO DETECT CASE', subtitle:'Upload and scan documents to identify the policy holder',
     payment:null, paymentIcon:'help_outline', ownerType:'—', customerName:'', customerCPR:''
   }
 
-  const BANK_KW   = ['BANK','FINANCE','FINANCIAL','CREDIT','FACILITIES','FINANCING','NBB','BBK','AUB','GIB','KFH','BISB','KHCB','FAB','BCF']
-  const CO_SFX    = ['WLL','BSC','SPC','LLC','LTD','LIMITED','B.S.C','W.L.L','S.P.C']
+  const BANK_KW = ['BANK','FINANCE','FINANCIAL','CREDIT','FACILITIES','FINANCING','NBB','BBK','AUB','GIB','KFH','BISB','KHCB','FAB','BCF']
+  const CO_SFX  = ['WLL','BSC','SPC','LLC','LTD','LIMITED','B.S.C','W.L.L','S.P.C']
   const ownerIsBank    = ownerName && BANK_KW.some(k => ownerName.toUpperCase().includes(k))
   const ownerIsCompany = ownerName && CO_SFX.some(s => ownerName.toUpperCase().includes(s))
-  const isCompany      = !!(crNumber || companyName || ownerIsCompany)
-  const isInstallment  = ownershipStatus === 'installment' || (!!bankName && !ownerIsBank) || ownerIsBank
-  const effectiveBank  = bankName || (ownerIsBank ? ownerName : '')
+  const isInstallment  = ownershipStatus === 'installment'
+  const personalId     = f.personal_id_number || ''
+  const cprDigits      = cprNumber.replace(/\D/g, '')
+  // CR number: not exactly 9 digits, OR doesn't match the civil ID personal ID number
+  const cprIsCompany   = cprDigits.length > 0 && cprDigits.length !== 9
+  const cprMismatch    = !!(personalId && cprNumber && personalId !== cprNumber)
+  const ownerIsEntity  = ownerIsBank || ownerIsCompany || !!crNumber || cprIsCompany || cprMismatch
 
-  if (isCompany) return {
-    type:'company', icon:'business', color:'#7c3aed', bg:'#f5f3ff', border:'#c4b5fd',
-    title:'COMPANY-OWNED VEHICLE', subtitle:'Vehicle registered under a company name',
-    payment:null, paymentIcon:'apartment', ownerType:'Company / شركة',
-    customerName: companyName || ownerName, customerCPR: crNumber
-  }
-  if (isInstallment && effectiveBank && ownerName && !ownerIsBank) return {
-    type:'joint', icon:'group', color:'#d97706', bg:'#fffbeb', border:'#fcd34d',
-    title:'JOINT NAME · INSTALLMENT', subtitle:`Owner & ${effectiveBank}`,
-    payment:'installment', paymentIcon:'account_balance', ownerType:'Individual + Bank',
-    customerName:`${ownerName} & ${effectiveBank}`, customerCPR: cprNumber
-  }
-  if (isInstallment && (ownerIsBank || effectiveBank)) return {
-    type:'bank_owner', icon:'account_balance', color:'#0284c7', bg:'#f0f9ff', border:'#7dd3fc',
-    title:'BANK-OWNED · INSTALLMENT', subtitle:'Finance company is the registered owner',
+  // Case 3: company / bank is the registered owner (entity signals alone are sufficient)
+  if (ownerIsEntity) return {
+    type:'installment_company', icon:'account_balance', color:'#0284c7', bg:'#f0f9ff', border:'#7dd3fc',
+    title:'INSTALLMENT · COMPANY / BANK OWNER', subtitle:'Finance company or bank is the registered owner',
     payment:'installment', paymentIcon:'account_balance', ownerType:'Bank / Finance',
-    customerName: effectiveBank || ownerName, customerCPR: cprNumber
+    customerName: ownerName, customerCPR: cprNumber,
   }
+
+  // Case 2: installment + individual customer name
+  if (isInstallment) return {
+    type:'installment_individual', icon:'person', color:'#d97706', bg:'#fffbeb', border:'#fcd34d',
+    title:'INSTALLMENT · INDIVIDUAL OWNER', subtitle:'Vehicle registered under the customer name with financing',
+    payment:'installment', paymentIcon:'account_balance', ownerType:'Individual / شخص',
+    customerName: ownerName, customerCPR: cprNumber,
+  }
+
+  // Case 1: cash / individual
   return {
     type:'individual', icon:'person', color:'#059669', bg:'#f0fdf4', border:'#6ee7b7',
-    title:'INDIVIDUAL · CASH OWNERSHIP', subtitle:ownerName || 'Personal ownership confirmed',
+    title:'INDIVIDUAL · CASH OWNERSHIP', subtitle: ownerName || 'Personal ownership confirmed',
     payment:'cash', paymentIcon:'payments', ownerType:'Individual / شخص',
-    customerName: ownerName, customerCPR: cprNumber
+    customerName: ownerName, customerCPR: cprNumber,
   }
+})
+
+// ── Cross-document validation ──────────────────────────────────────────────
+// Only validates between Smart Card (CPR) and Driving License:
+// the personal_id_number on the CPR must equal the license_number on the
+// driving license (in Bahrain they are the same number).
+const crossValidation = computed(() => {
+  const scanned = documents.value.filter(d =>
+    d.type && (docStatus(d) === 'done' || docStatus(d) === 'partial')
+  )
+
+  const cpr = scanned.find(d => d.type === 'smart_card')
+  const dl  = scanned.find(d => d.type === 'driving_license')
+  if (!cpr || !dl) return []
+
+  const norm = s => (s || '').trim().toUpperCase().replace(/\s+/g, ' ')
+
+  const cprId   = norm(cpr.front.extracted.personal_id_number || cpr.back.extracted.personal_id_number || '')
+  const dlId    = norm(dl.front.extracted.license_number      || dl.back.extracted.license_number      || '')
+  const cprName = norm(cpr.front.extracted.full_name  || '')
+  const dlName  = norm(dl.front.extracted.owner_name  || dl.back.extracted.owner_name || '')
+
+  const conflicts = []
+
+  if (cprId && dlId && cprId !== dlId)
+    conflicts.push({
+      field: 'ID',
+      docA: 'Smart Card (CPR)', valA: cprId,
+      docB: 'Driving License',  valB: dlId,
+    })
+
+  if (cprName && dlName && cprName !== dlName)
+    conflicts.push({
+      field: 'Name',
+      docA: 'Smart Card (CPR)', valA: cprName,
+      docB: 'Driving License',  valB: dlName,
+    })
+
+  return conflicts
 })
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -499,6 +580,26 @@ function removeDocument (id) {
   }
 }
 
+// ── Image preview lightbox ─────────────────────────────────────────────────
+const previewOpen   = ref(false)
+const previewImgUrl = ref(null)
+function openPreview (url) {
+  if (!url) return
+  previewImgUrl.value = url
+  previewOpen.value   = true
+}
+
+// ── File input refs (keyed "docId-side") ───────────────────────────────────
+const inputRefs = {}
+function setInputRef (docId, side, el) {
+  const key = `${docId}-${side}`
+  if (el) inputRefs[key] = el
+  else delete inputRefs[key]
+}
+function triggerFileInput (docId, side) {
+  inputRefs[`${docId}-${side}`]?.click()
+}
+
 function setSideMode (mode) {
   const doc = activeDoc.value
   if (!doc) return
@@ -521,12 +622,6 @@ function onFileChange (e, side) {
 
   const validation = validateFile(file, 'ocr')
   if (!validation.ok) {
-    logSiemEvent('FILE_REJECTED', getSiemUserId(), {
-      filename: file.name,
-      fileSize: file.size,
-      reason:   validation.reason,
-      docType:  activeDoc.value.type,
-    }, 'medium').catch(() => {})
     $q.notify({ type: 'negative', message: `${file.name} rejected — ${validation.reason}`, icon: 'block', timeout: 5000 })
     return
   }
@@ -569,19 +664,26 @@ function reRunOcr () {
 async function runOcr (doc, side) {
   const slot = doc[side]
   if (!slot?.file || !doc.type) return
+
+  const sanctumToken = getSanctumToken()
+  if (!sanctumToken) {
+    $q.notify({ type: 'warning', message: 'Please authorise with Zoho before scanning documents.', icon: 'lock', timeout: 5000 })
+    return
+  }
+
   slot.status    = 'ocr_running'
   slot.extracted = {}
   try {
     const body = new FormData()
     body.append('file', slot.file)
-    body.append('apikey', (typeof import.meta !== 'undefined' && import.meta.env?.VITE_OCR_SPACE_KEY) || 'K82551922288957')
-    body.append('language', 'eng')
-    body.append('isOverlayRequired', 'false')
     body.append('OCREngine', ['cr_certificate', 'vehicle_ownership'].includes(doc.type) ? '2' : '1')
-    body.append('scale', 'true')
-    body.append('isTable', 'false')
 
-    const res  = await fetch('https://api.ocr.space/parse/image', { method: 'POST', body })
+    const apiBase = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_LARAVEL_API_BASE) || 'http://127.0.0.1:8000/api'
+    const res  = await fetch(`${apiBase}/ocr/extract`, {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${sanctumToken}` },
+      body,
+    })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const json = await res.json()
     if (json.IsErroredOnProcessing) throw new Error(json.ErrorMessage?.[0] || 'OCR error')
@@ -591,21 +693,10 @@ async function runOcr (doc, side) {
     console.log(`[OCR ${side} raw]`, raw)
     slot.extracted = raw ? parseFields(raw, doc.type, side) : {}
     console.log(`[OCR ${side} fields]`, slot.extracted)
-    slot.status    = 'done'
-    logSiemEvent('FILE_UPLOAD', getSiemUserId(), {
-      filename: slot.file.name,
-      fileSize: slot.file.size,
-      docType:  doc.type,
-      side,
-    }, 'low').catch(() => {})
+    slot.status = 'done'
   } catch (err) {
     console.error('[OCR]', err)
     slot.status = 'error'
-    logSiemEvent('FILE_REJECTED', getSiemUserId(), {
-      filename: slot.file.name,
-      reason:   err.message || 'OCR processing failed',
-      docType:  doc.type,
-    }, 'medium').catch(() => {})
   }
 }
 
@@ -684,15 +775,24 @@ function extractField (text, field) {
     }
     case 'cpr_number': {
       const cprRaw = matchP(text, [
-        /(?:CPR|C\.P\.R\.?)\s*[:\-#.\s]*\n?\s*(\d{8,10})/im,
+        /(?:CPR|C\.P\.R\.?)\s*[:\-#.\s]*\n?\s*(\d{6,10})/im,
         /Civil\s*(?:ID|No\.?)\s*[:\-#]?\s*\n?\s*(\d{8,10})/im,
         /(?:PERSONAL\s*NO|National\s*(?:ID|No\.?))\s*[:\-\/]?\s*\n?\s*(\d{8,10})/im,
         /\b(\d{9})\b/,
         /\b((?:19|20)\d{7,8})\b/,
-        // Company-owned vehicle: CR number format e.g. "181226 - 2"
         /\b(\d{5,7}\s*-\s*\d{1,3})\b/,
       ])
-      return cprRaw ? cprRaw.replace(/\s*-\s*/g, '-').trim() : null
+      if (cprRaw) return cprRaw.replace(/\s*-\s*/g, '-').trim()
+      // Vehicle ownership layout: labels column then values column — CPR label and
+      // its value may be many lines apart. Scan forward from the CPR label for
+      // the first 7-10 digit standalone number (6-digit ones are reg numbers).
+      const cprLabelIdx = text.search(/\bCPR\b/i)
+      if (cprLabelIdx !== -1) {
+        const after = text.slice(cprLabelIdx + 3)
+        const m = after.match(/\b(\d{7,10})\b/)
+        if (m) return m[1]
+      }
+      return null
     }
     case 'nationality': {
       // Arabic nationality keywords (OCR of هندي → "HINDI" = Indian, etc.)
@@ -861,10 +961,29 @@ function extractField (text, field) {
       return fmtDate(matchP(text, [
         /(?:first\s*issue|issue\s*date|date\s*of\s*issue|issued)\s*[:\-]?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i,
       ]))
-    case 'expiry_date':
-      return fmtDate(matchP(text, [
-        /(?:expiry\s*date|exp(?:iry|ires)?\s*(?:date)?|valid\s*(?:until|to)|date\s*of\s*expiry)\s*[:\-]?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i,
+    case 'expiry_date': {
+      // ISO YYYY-MM-DD after label (date may be on next line, junk chars between)
+      const expFwd = matchP(text, [
+        /(?:expiry\s*date|exp(?:iry|ires)?\s*(?:date)?|valid\s*(?:until|to)|date\s*of\s*expiry)[^\d\n]*\n?\s*((19|20)\d{2}-\d{2}-\d{2})/i,
+        /تاريخ\s*الإنتهاء[^\d\n]*\n?\s*((19|20)\d{2}-\d{2}-\d{2})/,
+      ])
+      if (expFwd) return expFwd
+      // DD/MM/YYYY after label (same or next line)
+      const expFwd2 = fmtDate(matchP(text, [
+        /(?:expiry\s*date|exp(?:iry|ires)?\s*(?:date)?|valid\s*(?:until|to)|date\s*of\s*expiry)[^\d\n]*\n?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i,
+        /تاريخ\s*الإنتهاء[^\d\n]*\n?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/,
       ]))
+      if (expFwd2) return expFwd2
+      // Backward scan — date appears before the label in RTL bilingual layout
+      const expLabel = text.search(/expiry\s*date|date\s*of\s*expiry|تاريخ\s*الإنتهاء/i)
+      if (expLabel !== -1) {
+        const before = text.slice(Math.max(0, expLabel - 120), expLabel)
+        const bm = before.match(/((19|20)\d{2}-\d{2}-\d{2})\s*$/) ||
+                   before.match(/(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})\s*$/)
+        if (bm) return fmtDate(bm[1])
+      }
+      return null
+    }
     case 'vehicle_categories':
       return matchP(text, [
         /(Private\s+Saloon[^\n]*)/i,
@@ -885,7 +1004,7 @@ function extractField (text, field) {
       if (/أقساط/.test(text)) return 'installment'
       if (/ملكية\s*شخصية/.test(text)) return 'cash'
       if (/\b(?:instalment|installment|hire\s*purchase|financed?\s*by|mortgag)/i.test(text)) return 'installment'
-      if (/\b(?:personal\s*ownership|cash\s*ownership)/i.test(text)) return 'cash'
+      if (/\b(?:individual\s*owner|personal\s*ownership|cash\s*ownership|other\s*owner)\b/i.test(text)) return 'cash'
       return null
     }
     case 'bank_name': {
@@ -1027,9 +1146,9 @@ function extractField (text, field) {
   overflow: hidden; min-width: 0;
 }
 .docs-scroll {
-  flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px;
+  flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px;
 }
-.docs-scroll::-webkit-scrollbar       { width: 4px; }
+.docs-scroll::-webkit-scrollbar       { width: 4px; height: 4px; }
 .docs-scroll::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 4px; }
 
 /* ── Document Card ── */
@@ -1043,6 +1162,9 @@ function extractField (text, field) {
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
   overflow: hidden;
   min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  flex-shrink: 0;
 }
 .doc-card:hover    { border-color: #93c5fd; box-shadow: 0 2px 8px rgba(37,99,235,0.1); }
 .doc-card--active  { border-color: #2563eb !important; box-shadow: 0 2px 12px rgba(37,99,235,0.18) !important; }
@@ -1052,7 +1174,7 @@ function extractField (text, field) {
 }
 .dc-name  { font-size: 12px; font-weight: 700; color: #0f1f3d; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dc-badge { font-size: 9px !important; border-radius: 6px !important; }
-.dc-rm    { opacity: 0; transition: opacity 0.15s; flex-shrink: 0; }
+.dc-rm    { opacity: 0.45; transition: opacity 0.15s; flex-shrink: 0; }
 .doc-card:hover .dc-rm { opacity: 1; }
 
 /* ── Type Pills ── */
@@ -1068,8 +1190,10 @@ function extractField (text, field) {
 .dc-pill--on   { border-color: #2563eb !important; background: #eff6ff !important; color: #2563eb !important; }
 
 /* ── Photo Pair (two-sided) ── */
-.photo-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.photo-col  { display: flex; flex-direction: column; gap: 4px; }
+.photo-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; min-width: 0; }
+.photo-col  { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.photo-pair .photo-zone { height: 180px; min-height: unset; }
+.photo-pair .pz-thumb   { width: 100%; height: 100%; object-fit: contain; }
 .photo-side-lbl {
   display: flex; align-items: center; gap: 3px;
   font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #6b7280;
@@ -1094,8 +1218,8 @@ function extractField (text, field) {
 .pz-hint { font-size: 11px; font-weight: 600; color: #4b5a7a; }
 .pz-sub  { font-size: 10px; color: #9ca3af; }
 
-.pz-thumb { width: 100%; height: 94px; object-fit: cover; display: block; border-radius: 8px; }
-.pz-thumb--wide { height: 112px; }
+.pz-thumb { width: 100%; height: 100%; object-fit: contain; display: block; border-radius: 8px; }
+.pz-thumb--wide { height: 100%; }
 
 .pz-scanning {
   position: absolute; inset: 0;
@@ -1106,11 +1230,18 @@ function extractField (text, field) {
 
 .pz-hover {
   position: absolute; inset: 0;
-  display: flex; align-items: center; justify-content: center; gap: 5px;
-  background: rgba(15,31,61,0.5); color: #fff; font-size: 11px; font-weight: 600;
-  opacity: 0; transition: opacity 0.15s; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  background: rgba(15,31,61,0.55); color: #fff; font-size: 11px; font-weight: 600;
+  opacity: 0; transition: opacity 0.15s; border-radius: 8px;
 }
 .photo-zone--filled:hover .pz-hover { opacity: 1; }
+.pz-action {
+  display: flex; align-items: center; gap: 4px; cursor: pointer;
+  padding: 5px 9px; border-radius: 6px; background: rgba(255,255,255,0.15);
+  transition: background 0.12s;
+}
+.pz-action:hover { background: rgba(255,255,255,0.28); }
+.pz-action-sep   { opacity: 0.35; }
 
 .pz-err { font-size: 10px; color: #dc2626; display: flex; align-items: center; gap: 3px; }
 .pz-err--banner {
@@ -1215,6 +1346,25 @@ function extractField (text, field) {
 .fp-lbl   { font-size: 9px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.4px; width: 78px; flex-shrink: 0; }
 .fp-val   { font-size: 11px; color: #0f1f3d; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ── Cross-Validation Warning ── */
+.cv-card {
+  border-radius: 12px; border: 2px solid #fbbf24;
+  background: #fffbeb; padding: 11px 14px; flex-shrink: 0;
+}
+.cv-hdr {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10px; font-weight: 800; color: #92400e;
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+}
+.cv-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  font-size: 11px; color: #78350f; padding: 4px 0;
+  border-top: 1px solid rgba(251,191,36,0.3);
+}
+.cv-field { font-weight: 700; width: 36px; flex-shrink: 0; padding-top: 1px; }
+.cv-detail { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.cv-doc    { font-weight: 700; color: #92400e; }
+
 /* ── Selenium note ── */
 .selenium-note {
   display: flex; align-items: center; gap: 6px; flex-shrink: 0;
@@ -1235,4 +1385,26 @@ function extractField (text, field) {
 .confirm-btn { border-radius: 9px !important; font-weight: 700 !important; font-size: 12px !important; min-height: 36px !important; }
 
 /* ── Ocr-dlg-hdr compatibility (unused selectors removed) ── */
+
+/* ── Image Preview Lightbox ── */
+.ocr-lightbox {
+  width: 100vw; height: 100vh;
+  background: rgba(0,0,0,0.93);
+  display: flex; flex-direction: column; outline: none;
+}
+.ocr-lb-topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; background: rgba(0,0,0,0.45); flex-shrink: 0;
+}
+.ocr-lb-title {
+  flex: 1; font-size: 13px; font-weight: 600; color: #fff;
+}
+.ocr-lb-body {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  min-height: 0; padding: 16px; overflow: hidden;
+}
+.ocr-lb-img {
+  max-width: 100%; max-height: 100%; object-fit: contain;
+  border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+}
 </style>

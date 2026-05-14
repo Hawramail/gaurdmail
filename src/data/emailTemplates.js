@@ -126,6 +126,8 @@ export const emailTemplates = {
       </div>
     </div>
   `,
+
+  endorsementCancellation: (args) => endorsementCancellation(args),
 };
 
 export function endorsementCancellation ({
