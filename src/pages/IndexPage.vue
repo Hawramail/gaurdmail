@@ -1,29 +1,5 @@
 <template>
   <q-page class="send-email-page">
-    <!-- ── TOP BAR ── -->
-    <div class="page-topbar">
-      <div class="topbar-left">
-        <div class="topbar-brand-icon">
-          <q-icon name="mail_lock" size="15px" />
-        </div>
-        <span class="topbar-title">MailGuard</span>
-        <span class="topbar-divider">·</span>
-        <span class="topbar-app">Insurance Email Composer</span>
-      </div>
-      <div class="topbar-right">
-        <div
-          class="send-status"
-          :class="isReadyToSend ? 'status--ready' : 'status--pending'"
-        >
-          <q-icon
-            :name="isReadyToSend ? 'check_circle' : 'radio_button_unchecked'"
-            size="12px"
-          />
-          {{ isReadyToSend ? "Ready to send" : "Fill required fields" }}
-        </div>
-      </div>
-    </div>
-
     <!-- ── THREE-COLUMN GRID ── -->
     <div class="composer-grid q-pa-md">
       <!-- ══ COLUMN 1: EMAIL SETUP ══ -->
@@ -293,7 +269,6 @@
           <q-editor
             v-model="form.content"
             :toolbar="editorToolbar"
-            min-height="100%"
             class="tg-editor"
             placeholder="Email body will appear here once a template is selected..."
           />
@@ -457,6 +432,60 @@
               </template>
             </q-select>
 
+            <!-- ─ Endorsement / Cancellation fields ─ -->
+            <template v-if="form.template === 'endorsementCancellation'">
+              <div class="inner-section-label">
+                <q-icon name="edit_note" size="12px" />
+                Endorsement / Cancellation
+              </div>
+
+              <div class="attach-mode-row">
+                <div
+                  class="mode-option"
+                  :class="{ 'mode-active': formInputs.endorsementType === 'endorsement' }"
+                  @click="formInputs.endorsementType = 'endorsement'"
+                >
+                  <q-icon name="edit" size="14px" />
+                  Endorsement
+                </div>
+                <div
+                  class="mode-option"
+                  :class="{ 'mode-active': formInputs.endorsementType === 'cancellation' }"
+                  @click="formInputs.endorsementType = 'cancellation'"
+                >
+                  <q-icon name="cancel" size="14px" />
+                  Cancellation
+                </div>
+              </div>
+
+              <q-input
+                v-model="formInputs.effectiveDate"
+                outlined
+                dense
+                label="Effective Date"
+                type="date"
+                class="styled-input"
+              >
+                <template #prepend>
+                  <q-icon name="event" color="primary" size="15px" />
+                </template>
+              </q-input>
+
+              <q-input
+                v-model="formInputs.reason"
+                outlined
+                dense
+                label="Reason / Endorsement Details"
+                type="textarea"
+                autogrow
+                class="styled-input"
+              >
+                <template #prepend>
+                  <q-icon name="notes" color="primary" size="15px" />
+                </template>
+              </q-input>
+            </template>
+
             <!-- ─ Actions ─ -->
             <div class="inner-section-label">
               <q-icon name="bolt" size="12px" />
@@ -548,13 +577,14 @@
 </template>
 
 <script>
-import { emailTemplates } from "src/data/emailTemplates";
+import { emailTemplates, endorsementCancellation } from "src/data/emailTemplates";
 import { useCompanies } from "src/composables/useCompanies";
 import { useZoho } from "src/composables/useZoho";
 import { useSentEmails } from "src/composables/useSentEmails";
 import OcrUploadDialog from "src/components/OcrUploadDialog.vue";
 import { useBahrainLookup } from "src/composables/useBahrainLookup";
 import { validateFile } from "src/composables/useFileValidation";
+import { logSiemEvent } from "src/composables/useSeim";
 
 export default {
   name: "SendEmailPage",
@@ -926,6 +956,16 @@ export default {
           zohoMessageId:   zohoMessageId || null,
         });
 
+        const siemUser = localStorage.getItem("siem_user_email") || "staff";
+        const toList   = Array.isArray(this.form.to) ? this.form.to : [this.form.to];
+        await logSiemEvent("EMAIL_SENT", siemUser, {
+          count:      1,
+          recipients: toList.length,
+          company:    companyName,
+          template:   this.form.template || "",
+          message:    `Email sent to ${toList.join(", ")}`,
+        }, "low");
+
         this.$q.notify({
           type: "positive",
           message: "Email sent successfully",
@@ -977,12 +1017,18 @@ export default {
     },
 
     setTemplateSubject() {
+      if (this.form.template === 'endorsementCancellation') {
+        if (!this.formInputs.endorsementType) this.formInputs.endorsementType = 'endorsement'
+        this.form.subject = this.formInputs.endorsementType === 'cancellation'
+          ? 'Policy Cancellation Request'
+          : 'Policy Endorsement Request'
+        return
+      }
       const subjects = {
         specialApproval: "Special Approval Request",
         issueNewPolicy: "Issue New Policy Request",
         changeIssuedCover: "Change Issued Cover Request",
         policyTransfer: "Policy Transfer Request",
-        endorsementCancellation: "Endorsement / Cancellation Request",
       };
       this.form.subject = subjects[this.form.template] || "";
     },
@@ -993,7 +1039,10 @@ export default {
         return;
       }
 
-      const templateFn = emailTemplates[this.form.template];
+      const isEndorsement = this.form.template === 'endorsementCancellation'
+      const templateFn = isEndorsement
+        ? endorsementCancellation
+        : emailTemplates[this.form.template]
 
       if (!templateFn) {
         this.form.content = `
@@ -1002,6 +1051,13 @@ export default {
           </div>
         `;
         return;
+      }
+
+      // Keep subject in sync with endorsement vs cancellation switch
+      if (isEndorsement) {
+        this.form.subject = this.formInputs.endorsementType === 'cancellation'
+          ? 'Policy Cancellation Request'
+          : 'Policy Endorsement Request'
       }
 
       this.form.content = templateFn({
@@ -1180,9 +1236,22 @@ export default {
             icon:    'block',
             timeout: 6000,
           });
+          logSiemEvent('FILE_REJECTED', localStorage.getItem('siem_user_email') || 'staff', {
+            filename: file.name,
+            reason:   result.reason,
+          }, 'medium');
         } else {
           accepted.push(file);
         }
+      }
+      if (accepted.length) {
+        const totalBytes = accepted.reduce((sum, f) => sum + f.size, 0);
+        logSiemEvent('FILE_UPLOAD', localStorage.getItem('siem_user_email') || 'staff', {
+          filename:        accepted.map(f => f.name).join(', '),
+          totalSizeBytes:  totalBytes,
+          sizeMB:          parseFloat((totalBytes / 1024 / 1024).toFixed(2)),
+          message:         `${accepted.length} file(s) attached to email`,
+        }, 'low');
       }
       this.form.attachments = accepted.length ? accepted : null;
     },
@@ -1215,87 +1284,21 @@ export default {
 /* ── PAGE ── */
 .send-email-page {
   background: #eef2fb;
-  min-height: 100vh;
   display: flex;
   flex-direction: column;
-}
-
-/* ── TOP BAR ── */
-.page-topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 48px;
-  padding: 0 20px;
-  background: #ffffff;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
-  box-shadow: 0 1px 4px rgba(15, 31, 61, 0.05);
-  flex-shrink: 0;
-}
-.topbar-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.topbar-brand-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  color: #ffffff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.topbar-title {
-  font-size: 14px;
-  font-weight: 800;
-  color: #0f1f3d;
-  letter-spacing: -0.3px;
-}
-.topbar-divider {
-  color: #cbd5e1;
-  font-size: 14px;
-}
-.topbar-app {
-  font-size: 12px;
-  color: #8492a6;
-  font-weight: 500;
-}
-.topbar-right {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.send-status {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 20px;
-}
-.status--ready {
-  background: #f0fdf4;
-  color: #16a34a;
-  border: 1px solid #bbf7d0;
-}
-.status--pending {
-  background: #f8faff;
-  color: #94a3b8;
-  border: 1px solid #e2e8f0;
+  overflow: hidden;
 }
 
 /* ── GRID ── */
 .composer-grid {
   display: grid;
   grid-template-columns: 290px 1fr 340px;
+  grid-template-rows: 1fr;
   gap: 16px;
   flex: 1;
-  height: calc(100vh - 48px - 32px);
+  height: calc(100vh - 50px - 32px);
   min-height: 0;
+  overflow: hidden;
 }
 
 /* ── CARDS ── */
@@ -1494,14 +1497,22 @@ export default {
 .editor-body {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   display: flex;
+  flex-direction: column;
   padding: 12px !important;
 }
 .tg-editor {
   flex: 1;
+  min-height: 0;
   border-radius: 12px !important;
   overflow: hidden;
   border: 1.5px solid rgba(37, 99, 235, 0.12) !important;
+  display: flex;
+  flex-direction: column;
+}
+:deep(.tg-editor .q-editor__toolbars-container) {
+  flex-shrink: 0;
 }
 :deep(.tg-editor .q-editor__toolbar) {
   background: #f8faff;
@@ -1513,6 +1524,9 @@ export default {
   line-height: 1.7;
   color: #0f1f3d;
   padding: 16px;
+  flex: 1 1 0;
+  height: 0;
+  overflow-y: auto !important;
 }
 
 /* ── ACTION BAR ── */

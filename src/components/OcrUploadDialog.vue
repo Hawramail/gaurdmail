@@ -341,6 +341,7 @@ import { ref, computed } from 'vue'
 import { useQuasar } from 'quasar'
 import { getSanctumToken } from 'src/composables/useZoho'
 import { validateFile } from 'src/composables/useFileValidation'
+import { logSiemEvent } from 'src/composables/useSeim'
 
 const props = defineProps({ modelValue: Boolean })
 const emit = defineEmits(['update:modelValue', 'fields-confirmed'])
@@ -623,6 +624,10 @@ function onFileChange (e, side) {
   const validation = validateFile(file, 'ocr')
   if (!validation.ok) {
     $q.notify({ type: 'negative', message: `${file.name} rejected — ${validation.reason}`, icon: 'block', timeout: 5000 })
+    logSiemEvent('FILE_REJECTED', localStorage.getItem('siem_user_email') || 'staff', {
+      filename: file.name,
+      reason:   validation.reason,
+    }, 'medium')
     return
   }
 
@@ -674,8 +679,9 @@ async function runOcr (doc, side) {
   slot.status    = 'ocr_running'
   slot.extracted = {}
   try {
+    const orientedFile = await normaliseImageOrientation(slot.file)
     const body = new FormData()
-    body.append('file', slot.file)
+    body.append('file', orientedFile)
     body.append('OCREngine', ['cr_certificate', 'vehicle_ownership'].includes(doc.type) ? '2' : '1')
 
     const apiBase = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_LARAVEL_API_BASE) || 'http://127.0.0.1:8000/api'
@@ -724,6 +730,31 @@ function confirm () {
   emit('update:modelValue', false)
 }
 
+// ── Image orientation fix ─────────────────────────────────────────────────
+// Phones embed EXIF rotation in JPEGs. Sending the raw file to OCR ignores
+// that flag and the server sees an upside-down image. Drawing through an
+// <img> element causes the browser to apply EXIF rotation, so the canvas
+// blob is always correctly oriented.
+function normaliseImageOrientation (file) {
+  return new Promise((resolve) => {
+    if (!file.type.startsWith('image/')) { resolve(file); return }
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      const canvas = document.createElement('canvas')
+      canvas.width  = img.naturalWidth
+      canvas.height = img.naturalHeight
+      canvas.getContext('2d').drawImage(img, 0, 0)
+      canvas.toBlob((blob) => {
+        resolve(new File([blob], file.name, { type: 'image/jpeg' }))
+      }, 'image/jpeg', 0.92)
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file) }
+    img.src = url
+  })
+}
+
 // ── OCR field parsing ──────────────────────────────────────────────────────
 function matchP (text, patterns) {
   for (const re of patterns) {
@@ -769,7 +800,7 @@ function extractField (text, field) {
       if (nameNext?.[1] && !blocked(nameNext[1])) return nameNext[1].trim()
       for (const line of text.split('\n')) {
         const t = line.trim()
-        if (/^[A-Z]{3,}(\s+[A-Z]{3,}){2,}$/.test(t) && !blocked(t)) return t
+        if (/^[A-Z][A-Z\-]{2,}(\s+[A-Z][A-Z\-]{2,}){2,}$/.test(t) && !blocked(t)) return t
       }
       return null
     }
@@ -801,7 +832,7 @@ function extractField (text, field) {
         ['PAKISTANI','Pakistani'], ['باكستاني','Pakistani'],
         ['BANGLADESHI','Bangladeshi'], ['بنغلاديشي','Bangladeshi'],
         ['FILIPINO','Filipino'], ['FILIPIN','Filipino'], ['فلبيني','Filipino'],
-        ['BAHRAINI','Bahraini'], ['بحريني','Bahraini'],
+        ['BAHRAINI','Bahraini'], ['بحريني','Bahraini'], ['BAHRAIN','Bahraini'],
         ['SAUDI ARABIAN','Saudi Arabian'], ['SAUDI','Saudi'], ['سعودي','Saudi'],
         ['EGYPTIAN','Egyptian'], ['مصري','Egyptian'],
         ['JORDANIAN','Jordanian'], ['أردني','Jordanian'],

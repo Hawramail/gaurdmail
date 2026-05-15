@@ -11,17 +11,10 @@
           aria-label="Menu"
           @click="toggleLeftDrawer"
         />
-        <q-toolbar-title style="font-size: 15px; font-weight: 700; letter-spacing: -0.2px;">
-          MailGuard
+        <q-toolbar-title>
+          <span style="font-size: 15px; font-weight: 700; letter-spacing: -0.2px;">MailGuard</span>
+          <span v-if="pageTitle" style="font-size: 12px; font-weight: 500; color: #93c5fd; margin-left: 8px;">· {{ pageTitle }}</span>
         </q-toolbar-title>
-        <q-chip
-          dense
-          color="blue-8"
-          text-color="white"
-          icon="circle"
-          label="System Ready"
-          style="font-size: 11px;"
-        />
       </q-toolbar>
     </q-header>
 
@@ -121,9 +114,20 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
+import { useRoute } from 'vue-router'
 
 const leftDrawerOpen = ref(false)
+const route = useRoute()
+
+const pageTitle = computed(() => {
+  const titles = {
+    '/': 'Email Composer',
+    '/security': 'Security Dashboard',
+    '/admin/companies': 'Company Settings',
+  }
+  return titles[route.path] || ''
+})
 
 function toggleLeftDrawer() {
   leftDrawerOpen.value = !leftDrawerOpen.value

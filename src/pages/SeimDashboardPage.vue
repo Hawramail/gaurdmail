@@ -172,7 +172,7 @@
           <q-card-section class="sim-section">
             <div class="sim-label">Attack simulator</div>
             <div class="sim-desc">
-              Trigger simulated anomalies to test all 6 detection rules. Clear removes all demo events and alerts — real events are never deleted.
+              Trigger simulated anomalies to test all 6 detection rules. 
             </div>
             <q-btn
               unelevated color="dark" label="Run Attack Simulation" icon="play_arrow"
@@ -331,9 +331,9 @@ async function handleReset () {
 .stat-sub { font-size:11px; color:#8492a6; }
 
 /* ── LOWER GRID ── */
-.lower-grid { display:grid; grid-template-columns:1fr 360px; gap:12px; min-height:500px; }
-.left-col   { display:flex; flex-direction:column; min-height:0; }
-.right-col  { min-height:0; }
+.lower-grid { display:grid; grid-template-columns:1fr 360px; gap:12px; height:calc(100vh - 270px); overflow:hidden; }
+.left-col   { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.right-col  { min-height:0; overflow:hidden; display:flex; flex-direction:column; }
 
 /* ── SIEM CARDS ── */
 .siem-card        { border-radius:14px !important; background:#fff !important; border-color:rgba(0,0,0,0.07) !important; box-shadow:0 2px 8px rgba(15,31,61,0.05) !important; display:flex; flex-direction:column; overflow:hidden; }
@@ -389,7 +389,7 @@ async function handleReset () {
 .feed-empty-sub  { font-size:12px; color:#8492a6; text-align:center; }
 
 /* ── ALERT PANEL ── */
-.alert-card { height:100%; }
+.alert-card { flex:1; min-height:0; }
 .alert-body { flex:1; overflow-y:auto; min-height:0; }
 .alert-body::-webkit-scrollbar { width:4px; }
 .alert-body::-webkit-scrollbar-thumb { background:rgba(0,0,0,0.1); border-radius:4px; }
@@ -415,7 +415,8 @@ async function handleReset () {
 @media (max-width: 1200px) { .lower-grid { grid-template-columns: 1fr 300px; } }
 @media (max-width: 900px)  {
   .stat-grid  { grid-template-columns: repeat(2, 1fr); }
-  .lower-grid { grid-template-columns: 1fr; }
-  .right-col  { height: 500px; }
+  .lower-grid { grid-template-columns: 1fr; height: auto; overflow: visible; }
+  .left-col   { overflow: visible; }
+  .right-col  { height: 560px; overflow: hidden; }
 }
 </style>

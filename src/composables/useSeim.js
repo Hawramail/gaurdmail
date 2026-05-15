@@ -143,21 +143,26 @@ export function useSiem () {
     )
 
     eventsUnsub = onSnapshot(q, snap => {
-      events.value = snap.docs.map(d => {
-        const data   = d.data()
-        const tsDate = resolveTs(data.timestamp)
+      events.value = snap.docs
+        .map(d => {
+          const data   = d.data()
+          const tsDate = resolveTs(data.timestamp)
 
-        return {
-          id:        d.id,
-          eventType: data.eventType ?? '—',
-          userId:    data.userId    ?? '—',
-          severity:  data.severity  ?? 'low',
-          metadata:  formatMetadata(data.metadata),
-          timestamp: tsDate ? formatTs(tsDate) : '—',
-          _rawMs:    tsDate ? tsDate.getTime() : null,
-          anomalyRuleTriggered: data.anomalyRuleTriggered ?? null,
-        }
-      })
+          return {
+            id:        d.id,
+            eventType: data.eventType ?? '—',
+            userId:    data.userId    ?? '—',
+            severity:  data.severity  ?? 'low',
+            metadata:  formatMetadata(data.metadata),
+            timestamp: tsDate ? formatTs(tsDate) : '—',
+            _rawMs:    tsDate ? tsDate.getTime() : null,
+            anomalyRuleTriggered: data.anomalyRuleTriggered ?? null,
+          }
+        })
+        // Firestore orders Timestamp-type and string-type fields separately,
+        // so re-sort client-side by resolved ms to guarantee correct order
+        // regardless of how the backend wrote the timestamp field.
+        .sort((a, b) => (b._rawMs ?? 0) - (a._rawMs ?? 0))
     })
   }
 
@@ -215,14 +220,20 @@ export function useSiem () {
     for (const ev of simulationScenarios) {
       await new Promise(r => setTimeout(r, 500))
 
-      await addDoc(collection(db, 'security_events'), {
-        eventType:            ev.eventType,
-        userId:               ev.userId,
-        metadata:             ev.metadata,
-        severity:             ev.severity,
-        anomalyRuleTriggered: ev.rule,   // non-null marks this as a demo event
-        timestamp:            serverTimestamp(),
-      })
+      const burst = ev.burstCount ?? 1
+      for (let i = 0; i < burst; i++) {
+        // Individual burst events are low-severity plain docs so DetectAnomalies.php
+        // document-count query sees the right number; only the alert is critical.
+        await addDoc(collection(db, 'security_events'), {
+          eventType:            ev.eventType,
+          userId:               ev.userId,
+          metadata:             burst > 1 ? {} : ev.metadata,
+          severity:             burst > 1 ? 'low' : ev.severity,
+          anomalyRuleTriggered: ev.rule,
+          timestamp:            serverTimestamp(),
+        })
+        if (burst > 1 && i < burst - 1) await new Promise(r => setTimeout(r, 80))
+      }
 
       if (ev.severity === 'critical' || ev.severity === 'high') {
         await addDoc(collection(db, 'alerts'), {
@@ -232,7 +243,7 @@ export function useSiem () {
           userId:      ev.userId,
           metadata:    ev.metadata,
           status:      'open',
-          _demo:       true,              // marks this as a demo alert
+          _demo:       true,
           timestamp:   serverTimestamp(),
         })
       }
@@ -265,12 +276,27 @@ export function useSiem () {
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
+  const META_KEY_ORDER = [
+    'method', 'path', 'statusCode', 'template', 'company',
+    'filename', 'fileSize', 'mimeType', 'docType', 'side',
+    'source', 'accountId', 'reason', 'status', 'attempts',
+    'field', 'alertRule', 'alertId',
+  ]
+
   function formatMetadata (meta) {
     if (!meta) return ''
     if (typeof meta === 'string') return meta
-    const msg  = meta.message
+    const msg = meta.message
     const rest = Object.entries(meta)
       .filter(([k]) => k !== 'message')
+      .sort(([a], [b]) => {
+        const ai = META_KEY_ORDER.indexOf(a)
+        const bi = META_KEY_ORDER.indexOf(b)
+        if (ai === -1 && bi === -1) return a.localeCompare(b)
+        if (ai === -1) return 1
+        if (bi === -1) return -1
+        return ai - bi
+      })
       .map(([k, v]) => `${k}: ${v}`)
       .join(' · ')
     return rest || msg || ''

@@ -5,11 +5,12 @@
 
 export const simulationScenarios = [
   {
-    eventType: 'EMAIL_SENT',
-    userId:    'sim-user',
-    metadata:  { count: 11, message: 'Burst: 11 emails in 6 minutes' },
-    severity:  'critical',
-    rule:      'email_burst',
+    eventType:  'EMAIL_SENT',
+    userId:     'sim-user',
+    metadata:   { message: 'Burst: 11 emails in 6 minutes' },
+    severity:   'critical',
+    rule:       'email_burst',
+    burstCount: 11,   // write 11 separate docs so DetectAnomalies.php document-count query fires
   },
   {
     eventType: 'FILE_REJECTED',

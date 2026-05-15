@@ -224,7 +224,6 @@ export default {
     },
 
     async saveCompany() {
-      // Flush any unconfirmed typed email
       this.addEmail("to");
       this.addEmail("cc");
 
