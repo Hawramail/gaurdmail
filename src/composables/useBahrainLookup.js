@@ -5,6 +5,7 @@
 import { ref } from 'vue'
 import { collection, onSnapshot, query, orderBy, limit } from 'firebase/firestore'
 import { db } from 'src/firebase/config'
+import { logSiemEvent } from 'src/composables/useSeim'
 
 const GENIE_URL = 'http://localhost:3001/api/scrape'
 
@@ -43,6 +44,15 @@ export function useBahrainLookup() {
       if (!res.ok) throw new Error(data.error || 'Scrape failed')
 
       lookupResult.value = data
+
+      const userId = localStorage.getItem('siem_user_email') || 'system'
+      await logSiemEvent('TRAFFIC_LOOKUP', userId, {
+        plateno,
+        company,
+        regTypeID,
+        screenshotCount: data.screenshotUrls?.length ?? 0,
+      }, 'low')
+
       return data
 
     } catch (err) {
