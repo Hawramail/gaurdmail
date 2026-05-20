@@ -1,4 +1,13 @@
 <!DOCTYPE html>
+<!--
+  redirect.html — Zoho OAuth Redirect Landing Page
+
+  After the user logs in through Zoho, Zoho redirects the browser to this file:
+    http://localhost:9000/redirect.html#access_token=abc123...
+
+  This file must be a plain static HTML file (not a Vue route) because Vue Router
+  adds its own # to every URL, and Zoho would reject a double-# redirect URI.
+-->
 <html>
 <head>
   <title>Authorizing...</title>
@@ -11,6 +20,8 @@
   </style>
 </head>
 <body>
+
+<!-- Default loading state — visible while the script below runs -->
 <div class="box" id="msg">
   <div class="icon">⏳</div>
   <h2>Completing authorisation…</h2>
@@ -20,15 +31,21 @@
 <script>
   const API_BASE = 'http://127.0.0.1:8000/api';
 
+  // Replaces the loading message with a new icon + title + subtitle.
+  // Used to show success (✅), partial warning (⚠️), or failure (❌).
   function show(icon, title, sub) {
     document.getElementById('msg').innerHTML =
       `<div class="icon">${icon}</div><h2>${title}</h2><p>${sub}</p>`;
   }
 
   (async function () {
-    // Zoho returns the token as a hash fragment
-    const hash   = window.location.hash.replace(/^#/, '');
-    const params = new URLSearchParams(hash);
+
+    // ── STEP 1: Extract the Zoho token from the URL ───────────────────────────
+    // Zoho appends the token as a hash fragment after the URL:
+    //   /redirect.html#access_token=abc123&token_type=Bearer&...
+    // We strip the leading # then parse the rest like a query string.
+    const hash      = window.location.hash.replace(/^#/, '');
+    const params    = new URLSearchParams(hash);
     const zohoToken = params.get('access_token');
 
     if (!zohoToken) {
@@ -36,12 +53,18 @@
       return;
     }
 
-    // Persist the raw Zoho token for direct Zoho API calls
+    // ── STEP 2: Save the Zoho token to localStorage ───────────────────────────
+    // useZoho.js reads zoho_access_token later when sending emails via Zoho Mail.
+    // zoho_token_saved_at lets the app track the ~55-minute token lifetime
+    // and show the "token expiring soon" warning banner in the composer.
     localStorage.setItem('zoho_access_token', zohoToken);
     localStorage.setItem('zoho_token_saved_at', Date.now().toString());
 
-    // Exchange the Zoho token for a Sanctum session token.
-    // The backend verifies the token with Zoho — this is where identity is established.
+    // ── STEP 3: Exchange the Zoho token for a Sanctum token ───────────────────
+    // We POST the Zoho token to our Laravel backend. Laravel calls Zoho's API
+    // to verify the token is genuine, then issues its own Sanctum Bearer token.
+    // From here on, the Vue app uses the Sanctum token for all Laravel API calls —
+    // the raw Zoho token is only used for direct Zoho Mail API calls.
     try {
       const res = await fetch(`${API_BASE}/auth/login`, {
         method:  'POST',
@@ -50,18 +73,28 @@
       });
 
       if (res.ok) {
+        // ── STEP 4: Save the Sanctum token and user identity ─────────────────
+        // sanctum_token   → sent as Bearer token on every future Laravel API call
+        // siem_user_email → tags SIEM security events with the authenticated user
         const { token, mailboxAddress } = await res.json();
         localStorage.setItem('sanctum_token',   token);
         localStorage.setItem('siem_user_email', mailboxAddress);
         show('✅', 'You are authorised.', `Signed in as ${mailboxAddress}. You can close this tab.`);
+
       } else {
+        // Laravel rejected the token (invalid or expired Zoho token).
+        // Zoho token was saved but no Sanctum token — app will work but SIEM
+        // events will have no verified identity attached.
         const err = await res.json().catch(() => ({}));
         show('⚠️', 'Partially authorised.', `Zoho token saved, but session could not be established: ${err.error || res.status}. Try closing and re-authorising.`);
       }
+
     } catch (e) {
-      // API unreachable — Zoho token is saved, Sanctum token is not
+      // Laravel server is unreachable (e.g. XAMPP not running).
+      // Zoho token is saved but Sanctum token could not be obtained.
       show('⚠️', 'Partially authorised.', 'Zoho token saved but the API server is unreachable. Ensure the Laravel server is running, then re-authorise.');
     }
+
   })();
 </script>
 </body>

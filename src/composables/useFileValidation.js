@@ -5,11 +5,7 @@ const BLOCKED_EXTENSIONS = new Set([
   'reg', 'scr', 'pif', 'hta', 'cpl',
 ])
 
-const ALLOWED_EMAIL = new Set([
-  'pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'tif', 'webp',
-  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-  'txt', 'csv', 'rtf', 'zip', 'rar', '7z',
-])
+const ALLOWED_EMAIL = new Set(['jpg', 'jpeg', 'png', 'pdf'])
 
 const ALLOWED_OCR = new Set(['jpg', 'jpeg', 'png', 'pdf'])
 

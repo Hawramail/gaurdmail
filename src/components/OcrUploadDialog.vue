@@ -1,4 +1,41 @@
 <template>
+  <!--
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║  OcrUploadDialog.vue — Document Scanner Dialog                  ║
+    ║                                                                  ║
+    ║  PURPOSE:                                                        ║
+    ║    A full-screen modal dialog that lets staff upload photos of   ║
+    ║    physical documents (CPR, vehicle ownership, driving license,  ║
+    ║    CR certificate). Each image is sent to a backend OCR proxy,  ║
+    ║    which extracts text. The component then parses the text into  ║
+    ║    named fields, detects the insurance case type, cross-checks   ║
+    ║    documents for mismatches, and finally emits all fields back   ║
+    ║    to the parent form when the user clicks "Apply to Form".      ║
+    ║                                                                  ║
+    ║  FLOW OVERVIEW:                                                  ║
+    ║    1. Parent opens dialog  → modelValue = true                   ║
+    ║    2. User picks doc type  → onSetType()                         ║
+    ║    3. User uploads image   → onFileChange()                      ║
+    ║         → useFileValidation.js  (validateFile)  ← returns ok/err ║
+    ║         → useSeim.js           (logSiemEvent)   ← fire-and-return║
+    ║         → runOcr()                                               ║
+    ║              → useZoho.js      (getSanctumToken) ← returns token ║
+    ║              → normaliseImageOrientation()  ← returns File       ║
+    ║              → fetch /api/ocr/extract       ← returns JSON       ║
+    ║              → parseFields() → extractField() ← returns fields   ║
+    ║    4. Reactive computed properties update automatically          ║
+    ║    5. User clicks "Apply to Form" → confirm()                    ║
+    ║         → emits 'fields-confirmed' to parent (IndexPage.vue)     ║
+    ║         → emits 'update:modelValue' false → dialog closes        ║
+    ╚══════════════════════════════════════════════════════════════════╝
+  -->
+
+  <!-- STEP 1 ─────────────────────────────────────────────────────────
+       The parent (IndexPage.vue) controls visibility via :modelValue.
+       When the user closes the dialog (X button or Cancel), we emit
+       'update:modelValue' = false back to the parent to hide it.
+       `persistent` prevents accidental closes by clicking outside.
+  ──────────────────────────────────────────────────────────────────-->
   <q-dialog
     :model-value="modelValue"
     @update:model-value="val => $emit('update:modelValue', val)"
@@ -16,6 +53,7 @@
           <div class="dlg-hdr-title">Document Scanner</div>
           <div class="dlg-hdr-sub">Upload documents · OCR extracts fields automatically</div>
         </div>
+        <!-- X button → emits false → parent hides dialog -->
         <q-btn flat round dense icon="close" size="sm" @click="$emit('update:modelValue', false)" />
       </div>
 
@@ -24,10 +62,16 @@
       <!-- ── BODY ── -->
       <div class="dlg-body">
 
-        <!-- ═══ LEFT: Document Upload Cards ═══ -->
+        <!-- ═══ LEFT: Document Upload Cards ═══
+             STEP 2 ──────────────────────────────────────────────────
+             The `documents` array (reactive ref) holds one or more
+             document slots. Each slot has: id, type, front, back.
+             The user can add more cards with "Add another document".
+        ──────────────────────────────────────────────────────────── -->
         <div class="dlg-left">
           <div class="docs-scroll">
 
+            <!-- Loop over every document card in the documents[] array -->
             <div
               v-for="doc in documents"
               :key="doc.id"
@@ -35,21 +79,30 @@
               :class="{ 'doc-card--active': doc.id === activeDocId }"
               @click="activeDocId = doc.id"
             >
-              <!-- Card top row -->
+              <!-- Card top row: status dot, doc name, field summary badge, remove button -->
               <div class="dc-toprow">
+                <!-- statusDotClass() → returns a CSS class (gray/green/amber/red/blue)
+                     based on docStatus() which checks front/back slot statuses -->
                 <span class="s-dot" :class="statusDotClass(doc)" />
                 <span class="dc-name">{{ doc.type ? DOC_SCHEMAS[doc.type].label : 'New Document' }}</span>
+                <!-- fieldSummary() → returns e.g. "5 fields · 2 miss" -->
                 <q-badge
                   v-if="docStatus(doc) === 'done' || docStatus(doc) === 'partial'"
                   :color="totalUnmatchedDoc(doc) > 0 ? 'amber-8' : 'teal-7'"
                   :label="fieldSummary(doc)"
                   dense class="dc-badge"
                 />
+                <!-- removeDocument() → revokes blob URLs, splices array, resets activeDocId -->
                 <q-btn flat round dense icon="close" size="xs" class="dc-rm"
                   @click.stop="removeDocument(doc.id)" />
               </div>
 
-              <!-- Document type selector -->
+              <!-- STEP 3 ────────────────────────────────────────────
+                   Document type selector pills.
+                   Clicking a pill calls onSetType(key) which sets
+                   doc.type and immediately re-runs OCR if files are
+                   already present (doc.front.file / doc.back.file).
+              ──────────────────────────────────────────────────────-->
               <div class="dc-type-pills">
                 <div
                   v-for="(schema, key) in DOC_SCHEMAS"
@@ -63,10 +116,15 @@
                 </div>
               </div>
 
-              <!-- Upload zones (shown once type is selected) -->
+              <!-- Upload zones — only rendered after a type is chosen -->
               <div v-if="doc.type">
 
-                <!-- Two-sided: front + back photo cards -->
+                <!-- STEP 4a ──────────────────────────────────────────
+                     TWO-SIDED documents (Smart Card, Vehicle Ownership,
+                     Driving License): render a front and back photo zone.
+                     Each zone has a hidden <input type="file"> that is
+                     triggered by triggerFileInput() when the zone is clicked.
+                ────────────────────────────────────────────────────────-->
                 <div v-if="hasSides(doc.type)" class="photo-pair">
                   <div v-for="side in ['front','back']" :key="side" class="photo-col">
                     <div class="photo-side-lbl">
@@ -82,36 +140,56 @@
                       }"
                       @click.stop="!doc[side].file && triggerFileInput(doc.id, side)"
                     >
+                      <!-- Hidden file input. setInputRef stores a ref so we can
+                           programmatically click it via triggerFileInput(). -->
                       <input type="file" accept=".jpg,.jpeg,.png,.pdf" class="upload-input"
                         :ref="el => setInputRef(doc.id, side, el)"
+                        <!-- onFileChange() is the main upload handler (see STEP 5) -->
                         @change="e => { activeDocId = doc.id; onFileChange(e, side) }" />
+
+                      <!-- Empty state: prompt to add a photo -->
                       <template v-if="!doc[side].file">
                         <q-icon name="add_a_photo" size="24px" color="blue-4" />
                         <span class="pz-hint">Add photo</span>
                       </template>
+
+                      <!-- Filled state: show thumbnail or PDF icon -->
                       <template v-else>
+                        <!-- openPreview() sets previewImgUrl and opens the lightbox dialog -->
                         <img v-if="doc[side].previewUrl" :src="doc[side].previewUrl" class="pz-thumb"
                           @click.stop="openPreview(doc[side].previewUrl)" />
                         <q-icon v-else name="picture_as_pdf" size="26px" color="positive" />
+
+                        <!-- Scanning overlay: shown while OCR is in progress -->
                         <div v-if="doc[side].status === 'ocr_running'" class="pz-scanning">
                           <q-circular-progress indeterminate size="22px" color="white" track-color="transparent" />
                           <span class="pz-scan-txt">Scanning…</span>
                         </div>
+
+                        <!-- Hover overlay: Preview / Replace actions -->
                         <div class="pz-hover">
                           <span class="pz-action" @click.stop="openPreview(doc[side].previewUrl)">
                             <q-icon name="visibility" size="13px" /> Preview
                           </span>
                           <span class="pz-action-sep">|</span>
+                          <!-- triggerFileInput() programmatically clicks the hidden <input> -->
                           <span class="pz-action" @click.stop="triggerFileInput(doc.id, side)">
                             <q-icon name="photo_camera" size="13px" /> Replace
                           </span>
                         </div>
                       </template>
                     </div>
+
+                    <!-- Error message shown below zone if OCR failed -->
                     <div v-if="doc[side].status === 'error'" class="pz-err">
                       <q-icon name="error_outline" size="11px" /> OCR failed
                     </div>
-                    <!-- Field results for this side -->
+
+                    <!-- STEP 8 ──────────────────────────────────────
+                         After OCR completes (status === 'done'),
+                         extracted fields are displayed inline under
+                         each photo zone. Missing fields shown as "—".
+                    ────────────────────────────────────────────────-->
                     <div v-if="doc[side].status === 'done'" class="side-fields">
                       <div v-for="f in (DOC_SCHEMAS[doc.type]?.[(side==='front'?'frontFields':'backFields')] || [])" :key="f" class="sf-row">
                         <span class="sf-lbl">{{ FIELD_LABELS[f] || f }}</span>
@@ -122,7 +200,10 @@
                   </div>
                 </div>
 
-                <!-- Single-sided: one large photo zone -->
+                <!-- STEP 4b ──────────────────────────────────────────
+                     SINGLE-SIDED documents (CR Certificate): one wide
+                     photo zone, only using doc.front.
+                ────────────────────────────────────────────────────-->
                 <div v-else class="photo-single">
                   <div
                     class="photo-zone photo-zone--wide"
@@ -178,17 +259,26 @@
 
           </div>
 
-          <!-- Add document button -->
+          <!-- addDocument() appends a fresh mkDoc() slot and makes it active -->
           <div class="add-doc-row">
             <q-btn flat no-caps icon="add_circle_outline" label="Add another document"
               class="add-doc-btn" @click="addDocument" />
           </div>
         </div>
 
-        <!-- ═══ RIGHT: Analysis Panel ═══ -->
+        <!-- ═══ RIGHT: Analysis Panel ═══
+             STEP 9 ──────────────────────────────────────────────────
+             These three sections are all driven by computed properties
+             that re-evaluate automatically whenever documents[] changes.
+             No user interaction is needed — they update in real time.
+        ──────────────────────────────────────────────────────────── -->
         <div class="dlg-right">
 
-          <!-- ── CASE DETECTION CARD ── -->
+          <!-- ── CASE DETECTION CARD ──
+               detectedCase computed property reads mergedFields and
+               returns one of four objects: none / individual /
+               installment_individual / installment_company.
+               Colors and icons change automatically based on result. -->
           <div
             class="case-card"
             :class="'case-card--' + detectedCase.type"
@@ -205,6 +295,7 @@
               </div>
             </div>
 
+            <!-- Detail rows — only shown once at least one field is detected -->
             <template v-if="detectedCase.type !== 'none'">
               <div class="cc-badges">
                 <div class="cc-badge" :style="{ background: detectedCase.color + '18', color: detectedCase.color, border: '1px solid ' + detectedCase.color + '40' }">
@@ -243,7 +334,10 @@
             </template>
           </div>
 
-          <!-- ── Cross-Validation Warning ── -->
+          <!-- ── Cross-Validation Warning ──
+               crossValidation computed compares Smart Card vs Driving
+               License — if the CPR personal ID doesn't match the
+               license number, a conflict card appears here. -->
           <div v-if="crossValidation.length" class="cv-card">
             <div class="cv-hdr">
               <q-icon name="warning_amber" size="13px" />
@@ -258,7 +352,10 @@
             </div>
           </div>
 
-          <!-- ── ALL EXTRACTED FIELDS ── -->
+          <!-- ── ALL EXTRACTED FIELDS ──
+               mergedFields computed merges front+back extracted objects
+               from all scanned documents, with identity docs taking
+               priority over vehicle docs (PRIO sort). -->
           <div class="fields-panel">
             <div class="fp-hdr">
               <q-icon name="list_alt" size="13px" />
@@ -279,7 +376,8 @@
             </div>
           </div>
 
-          <!-- Selenium note -->
+          <!-- Shown when a vehicle reg number has been extracted,
+               indicating the Bahrain traffic lookup is available. -->
           <div v-if="activeDocReg" class="selenium-note">
             <q-icon name="travel_explore" size="12px" color="blue-6" />
             Reg. <strong>{{ activeDocReg }}</strong> → Bahrain Traffic Lookup ready
@@ -290,9 +388,17 @@
 
       <q-separator style="opacity:0.5" />
 
-      <!-- ── FOOTER ── -->
+      <!-- ── FOOTER ──
+           STEP 10 ────────────────────────────────────────────────────
+           Three buttons:
+           • Cancel → emits false → parent hides the dialog
+           • Re-scan → reRunOcr() → runs runOcr() on existing files
+           • Apply to Form → confirm() → emits 'fields-confirmed'
+                              with merged fields → parent receives them
+      ──────────────────────────────────────────────────────────────-->
       <div class="dlg-footer">
         <div class="footer-warn">
+          <!-- totalUnmatched computed = sum of missing fields across all docs -->
           <template v-if="totalUnmatched > 0">
             <q-icon name="warning_amber" color="amber-8" size="14px" />
             <span>{{ totalUnmatched }} field{{ totalUnmatched !== 1 ? 's' : '' }} not found — fill manually after confirming</span>
@@ -304,11 +410,13 @@
         </div>
         <div class="footer-btns">
           <q-btn flat no-caps dense label="Cancel" @click="$emit('update:modelValue', false)" />
+          <!-- Re-scan is only enabled if the active doc has a file AND a type selected -->
           <q-btn
             flat no-caps dense color="primary" icon="refresh" label="Re-scan"
             :disable="!activeDoc?.front?.file && !activeDoc?.back?.file || !activeDoc?.type"
             @click="reRunOcr"
           />
+          <!-- "Apply to Form" → confirm() merges fields and emits them to the parent -->
           <q-btn
             unelevated no-caps color="primary"
             label="Apply to Form"
@@ -322,7 +430,10 @@
     </q-card>
   </q-dialog>
 
-  <!-- ── Image Preview Lightbox ── -->
+  <!-- ── Image Preview Lightbox ──
+       A second full-screen dialog rendered outside the main card.
+       openPreview() sets previewImgUrl and flips previewOpen = true.
+       Clicking outside the image or the X closes it. -->
   <q-dialog v-model="previewOpen" maximized>
     <div class="ocr-lightbox" @click.self="previewOpen = false">
       <div class="ocr-lb-topbar">
@@ -339,16 +450,35 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useQuasar } from 'quasar'
+
+// ── External composables (other files) ────────────────────────────────────────
+// useZoho.js → getSanctumToken()
+//   GOES TO: src/composables/useZoho.js
+//   RETURNS: string | null — the Laravel Sanctum Bearer token stored in memory,
+//            or null if the user has not authorised with Zoho yet.
 import { getSanctumToken } from 'src/composables/useZoho'
+
+// useFileValidation.js → validateFile()
+//   GOES TO: src/composables/useFileValidation.js
+//   RETURNS: { ok: boolean, reason?: string }
+//            ok=true  → file is safe to process
+//            ok=false → reason explains why it was rejected (size, type, etc.)
 import { validateFile } from 'src/composables/useFileValidation'
+
+// useSeim.js → logSiemEvent()
+//   GOES TO: src/composables/useSeim.js
+//   RETURNS: void (fire-and-forget — just writes a security log entry)
 import { logSiemEvent } from 'src/composables/useSeim'
 
 const props = defineProps({ modelValue: Boolean })
+// 'update:modelValue' → tells parent to open/close the dialog (v-model pattern)
+// 'fields-confirmed'  → passes the merged field object to the parent form
 const emit = defineEmits(['update:modelValue', 'fields-confirmed'])
 
 const $q = useQuasar()
 
 // ── Doc type icons ─────────────────────────────────────────────────────────
+// Maps each document type key → a Material icon name used in the type pills.
 const DOC_ICONS = {
   smart_card:       'badge',
   vehicle_ownership:'directions_car',
@@ -357,21 +487,29 @@ const DOC_ICONS = {
 }
 
 // ── Schemas ────────────────────────────────────────────────────────────────
+// Each schema declares:
+//   label       — human-readable name shown in the UI
+//   hasSides    — true if the doc has a front AND back side
+//   frontFields — ordered list of field keys expected on the front image
+//   backFields  — ordered list of field keys expected on the back image
+// These arrays drive: which upload zones to show, which fields to parse
+// after OCR, and which fields to list in the side-fields panel.
 const DOC_SCHEMAS = {
   smart_card:       { label: 'Smart Card (CPR)',    hasSides: true,
     frontFields: ['full_name','personal_id_number','nationality'],
     backFields:  ['gender','date_of_birth','expiry_date'] },
   vehicle_ownership:{ label: 'Vehicle Ownership',   hasSides: true,
     frontFields: ['owner_name','cr_number','cpr_number','vehicle_reg_number','registration_type'],
-    backFields:  ['ownership_status','chassis_number','make','model','year_of_make','engine_capacity_cc','number_of_seats','cylinders'] },
+    backFields:  ['ownership_status','chassis_number','make','model','year_of_make'] },
   driving_license:  { label: 'Driving License',     hasSides: true,
     frontFields: ['owner_name','license_number'],
     backFields:  ['license_issue_date','expiry_date','vehicle_categories'] },
   cr_certificate:   { label: 'CR Certificate',      hasSides: false,
-    frontFields: ['cr_number','company_name','personal_id_number'],
+    frontFields: ['reg_number','company_name','personal_id_number'],
     backFields:  [] },
 }
 
+// Maps internal field keys → display labels shown in the UI panels.
 const FIELD_LABELS = {
   full_name:'Full Name', owner_name:'Owner Name', cpr_number:'CPR No.', personal_id_number:'Personal ID', nationality:'Nationality',
   date_of_birth:'Date of Birth', gender:'Gender',
@@ -384,34 +522,53 @@ const FIELD_LABELS = {
   vehicle_categories:'Categories', restrictions:'Restrictions',
   policy_number:'Policy No.', insurer_name:'Insurer',
   policy_start_date:'Start Date', policy_end_date:'End Date', renewal_date:'Renewal Date',
-  cr_number:'CR No.', company_name:'Company Name', personal_id_number:'Personal ID',
+  cr_number:'CR No.', reg_number:'Company Reg. No.', company_name:'Company Name', personal_id_number:'Personal ID',
 }
 
 // ── State ──────────────────────────────────────────────────────────────────
+// mkSlot() creates the initial state for one image upload slot (front or back).
+// Each slot tracks: the File object, a blob URL for preview, OCR status,
+// the extracted key-value fields, and the raw OCR text.
 function mkSlot () {
   return { file: null, previewUrl: null, status: 'empty', extracted: {}, rawText: null }
 }
+
+// mkDoc() creates a new document card with a unique id, no type yet selected,
+// and empty front/back slots.
 function mkDoc (id) {
   return { id, type: null, sideMode: 'both', front: mkSlot(), back: mkSlot() }
 }
 
 let nextId = 2
+// documents: reactive array of all document cards in the left panel.
+// Starts with one empty card (id=1).
 const documents   = ref([mkDoc(1)])
+// activeDocId: which card is currently highlighted/selected.
 const activeDocId = ref(1)
 
 // ── Computed ───────────────────────────────────────────────────────────────
+
+// activeDoc → the currently selected document object from the array.
 const activeDoc = computed(() => documents.value.find(d => d.id === activeDocId.value))
 
+// activeDocReg → vehicle registration number from the active doc's extracted fields.
+// Used to show the "Bahrain Traffic Lookup ready" hint.
 const activeDocReg = computed(() => {
   const doc = activeDoc.value
   if (!doc) return null
   return doc.front.extracted?.vehicle_reg_number || doc.back.extracted?.vehicle_reg_number || null
 })
 
+// totalUnmatched → sum of expected fields that returned null across all documents.
+// Drives the footer warning message.
 const totalUnmatched = computed(() =>
   documents.value.reduce((sum, d) => sum + totalUnmatchedDoc(d), 0)
 )
 
+// mergedFields → single flat object of all extracted key-value pairs.
+// Priority order: smart_card=1, driving_license=1, cr_certificate=2, vehicle_ownership=3.
+// Lower number = higher priority: if the same key appears in two docs, the
+// higher-priority doc wins (earlier in the sorted array).
 const mergedFields = computed(() => {
   const PRIO = { smart_card: 1, driving_license: 1, vehicle_ownership: 3, cr_certificate: 2 }
   const sorted = [...documents.value]
@@ -425,6 +582,13 @@ const mergedFields = computed(() => {
   return m
 })
 
+// detectedCase → reads mergedFields and classifies the insurance case:
+//   'none'                  → no fields scanned yet
+//   'installment_company'   → bank or company is the registered owner
+//   'installment_individual'→ vehicle is under finance but owned by a person
+//   'individual'            → straightforward cash / personal ownership
+// Returns a display object with: type, icon, color, bg, border, title,
+// subtitle, payment, paymentIcon, ownerType, customerName, customerCPR.
 const detectedCase = computed(() => {
   const f = mergedFields.value
   const ownerName      = f.owner_name || f.full_name || ''
@@ -455,7 +619,7 @@ const detectedCase = computed(() => {
     type:'installment_company', icon:'account_balance', color:'#0284c7', bg:'#f0f9ff', border:'#7dd3fc',
     title:'INSTALLMENT · COMPANY / BANK OWNER', subtitle:'Finance company or bank is the registered owner',
     payment:'installment', paymentIcon:'account_balance', ownerType:'Bank / Finance',
-    customerName: ownerName, customerCPR: cprNumber,
+    customerName: ownerName, customerCPR: crNumber || cprNumber,
   }
 
   // Case 2: installment + individual customer name
@@ -515,9 +679,12 @@ const crossValidation = computed(() => {
 })
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+// hasSides() → true if this doc type has a front AND back side.
 function hasSides (type) { return !!DOC_SCHEMAS[type]?.hasSides }
 function docTypeLabel (type) { return type ? DOC_SCHEMAS[type]?.label : 'No type selected' }
 
+// docStatus() → derives an overall status from the individual slot statuses.
+// Priority: ocr_running > error > done (all slots) > partial (some slots) > empty
 function docStatus (doc) {
   if (!doc.type) return 'empty'
   const slots = hasSides(doc.type) ? [doc.front, doc.back] : [doc.front]
@@ -528,6 +695,7 @@ function docStatus (doc) {
   return 'empty'
 }
 
+// statusDotClass() → maps docStatus to a CSS class for the colored dot.
 function statusDotClass (doc) {
   const st = docStatus(doc)
   if (st === 'ocr_running') return 'dot--blue'
@@ -537,6 +705,7 @@ function statusDotClass (doc) {
   return 'dot--gray'
 }
 
+// totalUnmatchedDoc() → counts expected fields that are still null after scanning.
 function totalUnmatchedDoc (doc) {
   if (!doc.type) return 0
   const s = DOC_SCHEMAS[doc.type]
@@ -545,6 +714,7 @@ function totalUnmatchedDoc (doc) {
   return frontMiss + backMiss
 }
 
+// fieldSummary() → returns a short badge label like "5 fields · 2 miss".
 function fieldSummary (doc) {
   if (!doc.type) return ''
   const s = DOC_SCHEMAS[doc.type]
@@ -557,12 +727,17 @@ function fieldSummary (doc) {
 }
 
 // ── Actions ────────────────────────────────────────────────────────────────
+
+// addDocument() → appends a new empty document card and makes it the active one.
 function addDocument () {
   const doc = mkDoc(nextId++)
   documents.value.push(doc)
   activeDocId.value = doc.id
 }
 
+// removeDocument() → cleans up blob URLs to avoid memory leaks,
+// removes the card from the array, ensures at least one card always exists,
+// and repoints activeDocId to a neighboring card.
 function removeDocument (id) {
   const idx = documents.value.findIndex(d => d.id === id)
   if (idx === -1) return
@@ -584,6 +759,7 @@ function removeDocument (id) {
 // ── Image preview lightbox ─────────────────────────────────────────────────
 const previewOpen   = ref(false)
 const previewImgUrl = ref(null)
+// openPreview() → stores the image URL and shows the lightbox dialog.
 function openPreview (url) {
   if (!url) return
   previewImgUrl.value = url
@@ -591,12 +767,15 @@ function openPreview (url) {
 }
 
 // ── File input refs (keyed "docId-side") ───────────────────────────────────
+// inputRefs stores direct DOM references to hidden <input type="file"> elements,
+// keyed by "docId-side" (e.g. "1-front"). Vue's :ref callback populates this.
 const inputRefs = {}
 function setInputRef (docId, side, el) {
   const key = `${docId}-${side}`
   if (el) inputRefs[key] = el
   else delete inputRefs[key]
 }
+// triggerFileInput() → programmatically opens the OS file picker for the given slot.
 function triggerFileInput (docId, side) {
   inputRefs[`${docId}-${side}`]?.click()
 }
@@ -607,6 +786,8 @@ function setSideMode (mode) {
   doc.sideMode = mode
 }
 
+// onSetType() → called when user clicks a type pill.
+// Sets doc.type, then immediately re-triggers OCR on any files already uploaded.
 function onSetType (key) {
   const doc = activeDoc.value
   if (!doc) return
@@ -616,14 +797,33 @@ function onSetType (key) {
   if (doc.back.file  && doc.back.status  !== 'ocr_running') runOcr(doc, 'back')
 }
 
+// ── STEP 5: File upload handler ────────────────────────────────────────────
+// onFileChange() is the main entry point when a user selects a file.
+// Flow:
+//   1. Read the File from the input event.
+//   2. GOES TO useFileValidation.js → validateFile(file, 'ocr')
+//      RETURNS { ok, reason }
+//   3. If rejected:
+//      - Show a Quasar notification.
+//      - GOES TO useSeim.js → logSiemEvent() → RETURNS void (fire-and-forget).
+//      - Early return — nothing else happens.
+//   4. If accepted:
+//      - Revoke any old blob URL for this slot.
+//      - Assign the new file, create a new blob URL for the thumbnail preview.
+//      - Reset extracted fields and status.
+//      - If a doc type is selected, call runOcr() to start scanning.
 function onFileChange (e, side) {
   const file = e.target.files?.[0]
   if (!file || !activeDoc.value) return
   e.target.value = ''
 
+  // GOES TO: src/composables/useFileValidation.js → validateFile()
+  // RETURNS: { ok: boolean, reason?: string }
   const validation = validateFile(file, 'ocr')
   if (!validation.ok) {
     $q.notify({ type: 'negative', message: `${file.name} rejected — ${validation.reason}`, icon: 'block', timeout: 5000 })
+    // GOES TO: src/composables/useSeim.js → logSiemEvent()
+    // RETURNS: void — just writes a security audit log entry
     logSiemEvent('FILE_REJECTED', localStorage.getItem('siem_user_email') || 'staff', {
       filename: file.name,
       reason:   validation.reason,
@@ -638,9 +838,11 @@ function onFileChange (e, side) {
   slot.status     = 'uploaded'
   slot.extracted  = {}
   slot.rawText    = null
+  // Only start OCR if the user has already selected a document type.
   if (activeDoc.value.type) runOcr(activeDoc.value, side)
 }
 
+// clearSide() → resets a slot back to its initial mkSlot() state.
 function clearSide (side) {
   const doc = activeDoc.value
   if (!doc) return
@@ -649,6 +851,7 @@ function clearSide (side) {
   Object.assign(slot, mkSlot())
 }
 
+// downloadFile() → creates a temporary <a> element to trigger a file download.
 function downloadFile (slot) {
   if (!slot?.file || !slot?.previewUrl) return
   const a = document.createElement('a')
@@ -659,6 +862,8 @@ function downloadFile (slot) {
   document.body.removeChild(a)
 }
 
+// reRunOcr() → manually re-scans files that are already uploaded.
+// Called by the "Re-scan" footer button.
 function reRunOcr () {
   const doc = activeDoc.value
   if (!doc?.type) return
@@ -666,10 +871,33 @@ function reRunOcr () {
   if (doc.back.file)  runOcr(doc, 'back')
 }
 
+// ── STEP 6: Core OCR function ──────────────────────────────────────────────
+// runOcr() is the async function that sends the image to the backend and
+// processes the result. It is called by onFileChange() and onSetType().
+//
+// Flow:
+//   1. Guard: slot must have a file and the doc must have a type.
+//   2. GOES TO: src/composables/useZoho.js → getSanctumToken()
+//      RETURNS: string token or null.
+//      If null → show warning notification and return early.
+//   3. Set slot.status = 'ocr_running' (triggers scanning overlay in template).
+//   4. STAYS IN this file → normaliseImageOrientation(file)
+//      RETURNS: a new File with correct EXIF rotation applied.
+//   5. Build a FormData body (file + OCREngine parameter).
+//      OCREngine 2 is used for denser documents (CR cert, vehicle ownership).
+//   6. POST to /api/ocr/extract (Laravel backend proxy to OCR.space API).
+//      RETURNS: JSON with ParsedResults[].ParsedText.
+//   7. If the API returns an error flag → throw to catch block.
+//   8. STAYS IN this file → parseFields(rawText, docType, side)
+//      RETURNS: { fieldKey: value, ... }
+//   9. Assign extracted fields to slot.extracted, set status = 'done'.
+//   10. On any error → set status = 'error'.
 async function runOcr (doc, side) {
   const slot = doc[side]
   if (!slot?.file || !doc.type) return
 
+  // GOES TO: src/composables/useZoho.js → getSanctumToken()
+  // RETURNS: Bearer token string, or null if not authorised
   const sanctumToken = getSanctumToken()
   if (!sanctumToken) {
     $q.notify({ type: 'warning', message: 'Please authorise with Zoho before scanning documents.', icon: 'lock', timeout: 5000 })
@@ -679,12 +907,18 @@ async function runOcr (doc, side) {
   slot.status    = 'ocr_running'
   slot.extracted = {}
   try {
+    // STAYS IN this file → normaliseImageOrientation()
+    // RETURNS: File with EXIF rotation corrected (so OCR sees upright image)
     const orientedFile = await normaliseImageOrientation(slot.file)
     const body = new FormData()
     body.append('file', orientedFile)
+    // OCREngine 2 handles printed/complex documents better; Engine 1 is faster for IDs
     body.append('OCREngine', ['cr_certificate', 'vehicle_ownership'].includes(doc.type) ? '2' : '1')
 
     const apiBase = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_LARAVEL_API_BASE) || 'http://127.0.0.1:8000/api'
+    // LEAVES this file → POST to Laravel backend at /api/ocr/extract
+    // The backend proxies the image to the OCR.space API and returns JSON.
+    // RETURNS: { ParsedResults: [{ ParsedText: '...', ... }], IsErroredOnProcessing: bool }
     const res  = await fetch(`${apiBase}/ocr/extract`, {
       method:  'POST',
       headers: { 'Authorization': `Bearer ${sanctumToken}` },
@@ -694,9 +928,12 @@ async function runOcr (doc, side) {
     const json = await res.json()
     if (json.IsErroredOnProcessing) throw new Error(json.ErrorMessage?.[0] || 'OCR error')
 
+    // Join all parsed pages into a single text string
     const raw = (json.ParsedResults || []).map(r => r.ParsedText || '').join('\n').trim()
     slot.rawText   = raw
     console.log(`[OCR ${side} raw]`, raw)
+    // STAYS IN this file → parseFields() → extractField()
+    // RETURNS: { fieldKey: extractedValue | null, ... }
     slot.extracted = raw ? parseFields(raw, doc.type, side) : {}
     console.log(`[OCR ${side} fields]`, slot.extracted)
     slot.status = 'done'
@@ -706,6 +943,12 @@ async function runOcr (doc, side) {
   }
 }
 
+// ── STEP 10: Confirm handler ───────────────────────────────────────────────
+// confirm() is called when the user clicks "Apply to Form".
+// It re-merges all extracted fields (same priority logic as mergedFields computed),
+// then emits them to the parent (IndexPage.vue) via 'fields-confirmed'.
+// The parent receives the object and populates its form inputs.
+// Finally, it closes the dialog by emitting 'update:modelValue' = false.
 function confirm () {
   const PRIO = {
     smart_card: 1,
@@ -726,26 +969,33 @@ function confirm () {
       if (v != null) merged[k] = v
     }
   }
+  // GOES TO: parent component (IndexPage.vue) via event listener
+  // The parent handles 'fields-confirmed' by writing merged into the form state.
   emit('fields-confirmed', merged)
   emit('update:modelValue', false)
 }
 
-// ── Image orientation fix ─────────────────────────────────────────────────
+// ── STEP 7: Image orientation fix ─────────────────────────────────────────
 // Phones embed EXIF rotation in JPEGs. Sending the raw file to OCR ignores
 // that flag and the server sees an upside-down image. Drawing through an
 // <img> element causes the browser to apply EXIF rotation, so the canvas
 // blob is always correctly oriented.
+// Called by: runOcr() before building the FormData body.
+// RETURNS: a new File object (Promise) with correct orientation baked in.
 function normaliseImageOrientation (file) {
   return new Promise((resolve) => {
+    // Non-images (PDFs) pass through unchanged
     if (!file.type.startsWith('image/')) { resolve(file); return }
     const url = URL.createObjectURL(file)
     const img = new Image()
     img.onload = () => {
       URL.revokeObjectURL(url)
+      // Draw the image into a canvas — browser applies EXIF rotation here
       const canvas = document.createElement('canvas')
       canvas.width  = img.naturalWidth
       canvas.height = img.naturalHeight
       canvas.getContext('2d').drawImage(img, 0, 0)
+      // Export as JPEG blob at 92% quality, wrap in a File, resolve the Promise
       canvas.toBlob((blob) => {
         resolve(new File([blob], file.name, { type: 'image/jpeg' }))
       }, 'image/jpeg', 0.92)
@@ -756,6 +1006,9 @@ function normaliseImageOrientation (file) {
 }
 
 // ── OCR field parsing ──────────────────────────────────────────────────────
+// matchP() is a utility that tries a list of regex patterns against `text`
+// and returns the first non-empty capture group, or null.
+// Used by all the individual field extractors in extractField().
 function matchP (text, patterns) {
   for (const re of patterns) {
     const m = text.match(re)
@@ -764,6 +1017,7 @@ function matchP (text, patterns) {
   return null
 }
 
+// fmtDate() normalises date strings to DD/MM/YYYY format.
 function fmtDate (raw) {
   if (!raw) return null
   const m = raw.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/)
@@ -771,6 +1025,10 @@ function fmtDate (raw) {
   return raw
 }
 
+// parseFields() → entry point for field extraction after OCR returns raw text.
+// Looks up which fields the schema expects for this side, normalises whitespace,
+// then calls extractField() for each field key.
+// RETURNS: { fieldKey: value | null, ... }
 function parseFields (rawText, docType, side) {
   const schema = DOC_SCHEMAS[docType]
   if (!schema) return {}
@@ -781,6 +1039,11 @@ function parseFields (rawText, docType, side) {
   return result
 }
 
+// extractField() → a large switch that maps a field key to regex extraction logic.
+// Each case handles the quirks of how OCR renders that particular field across
+// different document layouts (forward scan, backward scan for bilingual tables,
+// Arabic keyword mapping, etc.).
+// RETURNS: string value or null.
 function extractField (text, field) {
   switch (field) {
     case 'full_name':
@@ -947,7 +1210,8 @@ function extractField (text, field) {
         'RAM','INFINITI','SUBARU','PORSCHE','JAGUAR','BENTLEY'])
       const ccModel = matchP(text, [/\b(\d{3,4}\s*CC)\b/i])
       if (ccModel) return ccModel
-      const isValid = v => v && !MODEL_BRANDS.has(v.trim().toUpperCase()) && v.trim().length >= 2
+      const FIELD_LABELS_SET = /^(color|colour|type|weight|seats?|class|year|make|chassis|engine|cylinders?)$/i
+      const isValid = v => v && !MODEL_BRANDS.has(v.trim().toUpperCase()) && v.trim().length >= 2 && !FIELD_LABELS_SET.test(v.trim())
       const tryForward = (src) => {
         const raw = matchP(src, [
           /\bModel\b\s*[:\-]?\s*\n?\s*([A-Za-z0-9][A-Za-z0-9 ]{1,15})(?=\s*(?:\n|Color|Make|Year|Chassis|Engine|$))/im,
@@ -1076,6 +1340,23 @@ function extractField (text, field) {
           const m = t.match(/\b(\d{5,10})\b/)
           if (m) return m[1]
         }
+      }
+      return null
+    }
+    case 'reg_number': {
+      const regPatterns = [
+        /\bRegistration\s*\n?\s*No\.?\s*[:\-]?\s*\n?\s*(\d[\d\s]*-\s*\d+)/im,
+        /\bRegistration\s*\n?\s*No\.?\s*[:\-]?\s*\n?\s*(\d{5,10})/im,
+      ]
+      const raw = matchP(text, regPatterns)
+      if (raw) return raw.replace(/\s*-\s*/g, '-').trim()
+      // Backward scan: "Registration\nNo." split across lines in bilingual layout
+      const clean = text.replace(/[؀-ۿ]+/g, ' ')
+      const labelIdx = clean.search(/\bRegistration\s*\n?\s*No\.?/i)
+      if (labelIdx !== -1) {
+        const after = clean.slice(labelIdx)
+        const m = after.match(/(\d[\d\s]*-\s*\d+|\d{5,10})/)
+        if (m) return m[1].replace(/\s*-\s*/g, '-').trim()
       }
       return null
     }

@@ -842,7 +842,7 @@ export default {
       if (ownerIsEntity) {
         // Case 3: company / bank is the registered owner (entity signals alone are sufficient)
         this.formInputs.customerName     = ownerName;
-        this.formInputs.customerCPR      = cprNumber;
+        this.formInputs.customerCPR      = crNumber || cprNumber;
         this.formInputs.underCompanyName = true;
       } else if (isInstallment) {
         // Case 2: installment + individual customer name
