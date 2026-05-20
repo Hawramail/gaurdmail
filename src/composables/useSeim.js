@@ -16,7 +16,18 @@ import {
 import { db } from 'src/firebase/config'
 import { simulationScenarios } from 'src/data/siemSimulation'
 
-// ── Standalone export — call from any component without subscribing ──────────
+// ── Standalone export ─────────────────────────────────────────────────────────
+//
+// logSiemEvent() is exported separately so any component (IndexPage, OcrUploadDialog, etc.)
+// can write a security event to Firestore without mounting the full useSiem() composable.
+//
+// serverTimestamp() tells Firestore to set the time on its own server rather than using
+// the browser clock — important because browser clocks can be wrong, skewed, or spoofed,
+// which would corrupt chronological ordering in the SIEM feed.
+//
+// anomalyRuleTriggered is always null here because this is a real production event,
+// not a simulation. The detection engine and clearSimData() use this field to tell the
+// difference: null = real, non-null = demo/simulation and safe to delete.
 export async function logSiemEvent (eventType, userId, metadata = {}, severity = 'low') {
   await addDoc(collection(db, 'security_events'), {
     eventType,
@@ -24,11 +35,14 @@ export async function logSiemEvent (eventType, userId, metadata = {}, severity =
     metadata,
     severity,
     anomalyRuleTriggered: null,
-    timestamp: serverTimestamp(),
+    timestamp: new Date().toISOString(),
   })
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────
+// Compares only the calendar date portion (ignores time) to determine if an
+// event's millisecond timestamp falls on today's date.
+// Used by the stats computed to count today's EMAIL_SENT / FILE_UPLOAD events.
 function isToday (ms) {
   if (!ms) return false
   return new Date(ms).toDateString() === new Date().toDateString()
@@ -36,16 +50,32 @@ function isToday (ms) {
 
 export function useSiem () {
   // ── Reactive state ─────────────────────────────────────────────────────────
+  //
+  // events and alerts are populated by onSnapshot listeners (see subscribeEvents /
+  // subscribeAlerts below). Every time Firestore changes, Vue's reactivity system
+  // automatically re-runs all computed values that depend on these refs.
+  //
+  // feedFilter holds the currently selected severity in the UI dropdown ('all',
+  // 'critical', 'high', 'medium', 'low'). filteredEvents reads it to slice the feed.
   const events     = ref([])
   const alerts     = ref([])
   const feedFilter = ref('all')
 
+  // Unsubscribe handles returned by onSnapshot — called in onUnmounted to stop the
+  // persistent listeners and prevent memory leaks after the component is destroyed.
   let eventsUnsub = null
   let alertsUnsub = null
 
   // ── Computed ───────────────────────────────────────────────────────────────
+
+  // Maps severity labels to a numeric rank so range comparisons work cleanly
+  // (e.g. "high and above" = severityOrder >= 3 instead of an array includes check).
   const severityOrder = { critical: 4, high: 3, medium: 2, low: 1 }
 
+  // Applies the severity dropdown filter to the full events array.
+  // 'high' means high OR critical (>= 3), 'medium' means medium, high, or critical (>= 2)
+  // because showing a high-severity event when the user filters for "medium and above"
+  // is more useful than hiding it.
   const filteredEvents = computed(() => {
     const f = feedFilter.value
     if (f === 'all')      return events.value
@@ -55,8 +85,16 @@ export function useSiem () {
     return events.value.filter(e => e.severity === 'low')
   })
 
+  // Filters alerts to only those still requiring action. When an alert is acknowledged
+  // or resolved, its status changes in Firestore → onSnapshot fires → alerts.value updates
+  // → this computed recomputes → the alert card disappears from the dashboard panel
+  // automatically, with no manual refresh or polling needed.
   const openAlerts = computed(() => alerts.value.filter(a => a.status === 'open'))
 
+  // Derives the three summary counters shown at the top of the dashboard entirely from
+  // the in-memory events array — no separate counter document in Firestore.
+  // emailsSent and fileUploads are scoped to today so the number resets each day.
+  // anomalies counts ALL time because every anomaly remains relevant regardless of age.
   const stats = computed(() => {
     const todayEvents = events.value.filter(e => isToday(e._rawMs))
     return {
@@ -70,6 +108,11 @@ export function useSiem () {
   })
 
   // ── Chart data — events per hour for last 12 hours ─────────────────────────
+  // Builds 12 hourly buckets (oldest → newest, left → right on the chart).
+  // For each event, ageH is how many hours ago it happened. Math.floor(ageH) gives
+  // which integer hour-ago slot it belongs to; subtracting from 11 flips the index
+  // so bucket 0 = 11 hours ago and bucket 11 = current partial hour.
+  // Events older than 12 hours are skipped entirely.
   const chartData = computed(() => {
     const now    = Date.now()
     const labels = []
@@ -114,11 +157,17 @@ export function useSiem () {
   }
 
   // ── Timestamp helpers ──────────────────────────────────────────────────────
-  // Handles both Firestore Timestamp objects (frontend writes) and ISO strings (backend REST writes)
+  //
+  // Two different timestamp formats arrive from Firestore depending on who wrote the document:
+  //   • Frontend writes (logSiemEvent, resolveAlert, simulation) use serverTimestamp(), which
+  //     Firestore returns as a Timestamp object with a .toDate() method.
+  //   • Laravel backend writes use the REST API and store timestamps as ISO 8601 strings.
+  // resolveTs normalises both into a plain JS Date so the rest of the code doesn't care
+  // which path was used to write the document.
   function resolveTs (raw) {
     if (!raw) return null
-    if (typeof raw.toDate === 'function') return raw.toDate()
-    const d = new Date(raw)
+    if (typeof raw.toDate === 'function') return raw.toDate()  // Firestore Timestamp object
+    const d = new Date(raw)                                     // ISO string from Laravel REST
     return isNaN(d.getTime()) ? null : d
   }
 
@@ -135,11 +184,23 @@ export function useSiem () {
   }
 
   // ── Firebase subscriptions ─────────────────────────────────────────────────
+  //
+  // onSnapshot creates a persistent real-time listener rather than a one-shot fetch.
+  // It fires immediately with the current snapshot, then fires again every time the
+  // underlying Firestore collection changes (new document, update, delete).
+  // This means the dashboard updates live — no polling or manual refresh required.
+  //
+  // The client-side re-sort after mapping is necessary because Firestore orders
+  // Firestore Timestamp objects and plain string timestamps independently. Two events
+  // written at nearly the same time — one from the frontend (Timestamp) and one from
+  // Laravel (string) — can appear out of order in the Firestore query result even
+  // though orderBy('timestamp', 'desc') was requested. Sorting by resolved _rawMs
+  // guarantees correct display order regardless of how the timestamp was stored.
   function subscribeEvents () {
     const q = query(
       collection(db, 'security_events'),
       orderBy('timestamp', 'desc'),
-      limit(100)
+      limit(100)          // cap at 100 most-recent events to keep reads and memory bounded
     )
 
     eventsUnsub = onSnapshot(q, snap => {
@@ -155,13 +216,11 @@ export function useSiem () {
             severity:  data.severity  ?? 'low',
             metadata:  formatMetadata(data.metadata),
             timestamp: tsDate ? formatTs(tsDate) : '—',
-            _rawMs:    tsDate ? tsDate.getTime() : null,
+            _rawMs:    tsDate ? tsDate.getTime() : null,  // numeric ms for sorting and age math
             anomalyRuleTriggered: data.anomalyRuleTriggered ?? null,
           }
         })
-        // Firestore orders Timestamp-type and string-type fields separately,
-        // so re-sort client-side by resolved ms to guarantee correct order
-        // regardless of how the backend wrote the timestamp field.
+        // Re-sort client-side — see comment above about mixed timestamp types.
         .sort((a, b) => (b._rawMs ?? 0) - (a._rawMs ?? 0))
     })
   }
@@ -173,6 +232,9 @@ export function useSiem () {
       limit(50)
     )
 
+    // When the detection engine (DetectAnomalies.php) or the simulation writes a new alert,
+    // this listener fires and alerts.value updates → openAlerts recomputes → the alert card
+    // appears in the dashboard panel within milliseconds, without any polling.
     alertsUnsub = onSnapshot(q, snap => {
       alerts.value = snap.docs.map(d => {
         const data = d.data()
@@ -190,16 +252,26 @@ export function useSiem () {
   }
 
   // ── Alert actions — direct Firestore writes ────────────────────────────────
+  //
+  // Both functions write directly to Firestore without going through Laravel.
+  // The onSnapshot listener picks up the status change and the card disappears
+  // from openAlerts automatically — no extra UI state to manage.
+
+  // Marks the alert as seen but not yet fixed — keeps it visible but de-escalated.
   async function acknowledgeAlert (alert) {
     await updateDoc(doc(db, 'alerts', alert.id), { status: 'acknowledged' })
   }
 
+  // Marks the alert as fixed and writes an ALERT_RESOLVED event to the security_events
+  // feed so there is a permanent audit trail of who resolved what and when.
+  // anomalyRuleTriggered is null on this event so it is treated as a real event and
+  // is NOT deleted by clearSimData().
   async function resolveAlert (alert) {
     await updateDoc(doc(db, 'alerts', alert.id), {
       status:     'resolved',
       resolvedAt: serverTimestamp(),
     })
-    // Audit trail — the SIEM logs its own resolution
+    // Audit trail the SIEM logs its own resolution
     await addDoc(collection(db, 'security_events'), {
       eventType:            'ALERT_RESOLVED',
       userId:               'staff_user',
@@ -211,11 +283,31 @@ export function useSiem () {
   }
 
   // ── Event logger ──────────────────────────────────────────────────────────
+  // Thin wrapper around the standalone logSiemEvent so components that already
+  // have useSiem() mounted can call logEvent() without importing the standalone function.
   async function logEvent (eventType, userId, metadata = {}, severity = 'low') {
     await logSiemEvent(eventType, userId, metadata, severity)
   }
 
   // ── Simulation ────────────────────────────────────────────────────────────
+  //
+  // Walks through simulationScenarios and writes them to Firestore with a 500 ms
+  // pause between scenarios so the dashboard visually animates rather than
+  // flooding all at once.
+  //
+  // For burst scenarios (burstCount > 1, e.g. email flooding), individual events are
+  // written with severity 'low' and empty metadata so they look like ordinary traffic.
+  // Only the accompanying alert carries the high/critical severity. The 80 ms gap between
+  // burst items is enough for DetectAnomalies.php's Firestore count query to see the correct
+  // number of events when it next polls.
+  //
+  // anomalyRuleTriggered is set to ev.rule (non-null) on every simulation event.
+  // This single field is the marker that distinguishes simulated from real events and
+  // is what clearSimData() queries on when cleaning up.
+  //
+  // Alerts for high/critical scenarios are written directly here rather than waiting for
+  // the detection engine to pick them up — this makes the demo instantaneous regardless
+  // of the engine's polling interval.
   async function runSimulation () {
     for (const ev of simulationScenarios) {
       await new Promise(r => setTimeout(r, 500))
@@ -235,6 +327,7 @@ export function useSiem () {
         if (burst > 1 && i < burst - 1) await new Promise(r => setTimeout(r, 80))
       }
 
+      // Write the alert directly so the demo doesn't depend on the backend engine's poll interval.
       if (ev.severity === 'critical' || ev.severity === 'high') {
         await addDoc(collection(db, 'alerts'), {
           rule:        ev.rule,
@@ -250,8 +343,9 @@ export function useSiem () {
     }
   }
 
-  // Delete only demo events (anomalyRuleTriggered !== null) and all alerts.
-  // Real events (anomalyRuleTriggered: null) are preserved.
+  // Deletes only simulation events (anomalyRuleTriggered !== null) and all alerts.
+  // Real production events written by logSiemEvent (anomalyRuleTriggered: null) are
+  // deliberately preserved, so running a demo does not erase real usage history.
   async function clearSimData () {
     const [eventsSnap, alertsSnap] = await Promise.all([
       getDocs(query(collection(db, 'security_events'), where('anomalyRuleTriggered', '!=', null))),
@@ -263,7 +357,8 @@ export function useSiem () {
     ])
   }
 
-  // Delete ALL events and ALL alerts — full clean slate.
+  // Nuclear option — wipes every event and every alert regardless of origin.
+  // Use only when a full clean slate is needed (e.g. resetting a dev environment).
   async function clearAllData () {
     const [eventsSnap, alertsSnap] = await Promise.all([
       getDocs(collection(db, 'security_events')),
@@ -276,6 +371,15 @@ export function useSiem () {
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
+  //
+  // Metadata objects vary widely by event type (file uploads have filename/mimeType,
+  // auth events have attempts/reason, etc.). This function flattens them into a single
+  // readable string for the feed table.
+  //
+  // META_KEY_ORDER controls column priority — the most important keys (method, path,
+  // filename) appear first regardless of insertion order. Keys not in the list are
+  // appended alphabetically at the end. The 'message' key is pulled out separately
+  // and used as a fallback if no other keys are present.
   const META_KEY_ORDER = [
     'method', 'path', 'statusCode', 'template', 'company',
     'filename', 'fileSize', 'mimeType', 'docType', 'side',
@@ -303,6 +407,12 @@ export function useSiem () {
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
+  //
+  // Listeners are started in onMounted (not at composable call time) so that the
+  // Vue component tree is fully set up before Firestore data starts flowing in.
+  // They are torn down in onUnmounted — calling the unsubscribe functions returned by
+  // onSnapshot stops Firestore from pushing updates to a component that no longer
+  // exists, preventing memory leaks and Vue reactivity warnings.
   onMounted(() => {
     subscribeEvents()
     subscribeAlerts()

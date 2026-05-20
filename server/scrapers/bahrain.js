@@ -1,12 +1,35 @@
 // server/scrapers/bahrain.js
 // Selenium scraper for bahrain.bh — Vehicle Registration Renewal + Vehicle Record Enquiry PDF
+//
+// What this file does:
+//   Two jobs:
+//     1. Vehicle Registration Renewal — fills the first form on bahrain.bh, scrapes vehicle data, takes a screenshot
+//     2. Vehicle Record Enquiry — fills a second form, gets the PDF report
+//   Both run automatically using Selenium — a real Firefox browser controlled by code.
+//
+// Full chain:
+//   Vue clicks "Bahrain Traffic Lookup"
+//       → POST localhost:3001/api/scrape
+//       → searchTrafficRecord() launches Firefox
+//       → fills Registration Renewal form → scrapes vehicle data
+//       → takes screenshot → uploads to Firebase Storage
+//       → fills Vehicle Record Enquiry form → clicks Export
+//       → fetches PDF → uploads to Firebase Storage
+//       → saves to Firestore traffic_records
+//       → returns { vehicleData, screenshotData, pdfData }
+//       → Vue converts to File objects → adds to attachments
+//       → form fields auto-fill with vehicle data
 
 const { Builder, By, until } = require("selenium-webdriver");
 
+// xcomment: timeout() — thin Promise wrapper around setTimeout, used throughout for explicit waits
+// when Selenium's built-in until.* conditions aren't enough (e.g. after AJAX reloads, after modal open)
 function timeout(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// xcomment: formatDate() — converts portal date strings ("DD/MM/YYYY HH:MM:SS") to ISO "YYYY-MM-DD"
+// The portal returns dates like "15/03/2025 00:00:00" — we strip the time and reorder the parts
 function formatDate(dateString) {
   if (!dateString) return null;
   const datePart = dateString.split(" ")[0];
@@ -20,10 +43,18 @@ function formatDate(dateString) {
   return null;
 }
 
+// ── searchTrafficRecord() ─────────────────────────────────────────────────────────────────────────
+// The main function. Called by server/index.js when Vue hits /api/scrape.
+//   { cpr, plateno, company, regTypeID = "01" } — CPR/CR number, plate, company flag, registration type code
+//   bucket — Firebase Storage instance (passed from server/index.js) for uploading screenshots and PDFs
+//   db     — Firestore instance (passed from server/index.js) for saving the traffic record document
 async function searchTrafficRecord({ cpr, plateno, company, regTypeID = "01" }, bucket, db) {
   const timestamp   = Date.now();
   const results = { screenshots: [], screenshotData: [], pdfUrl: null, pdfData: null, vehicleData: null, firestoreDocId: null };
 
+  // Step 1 — Open bahrain.bh
+  // Launches a real Firefox window, navigates to the GDT portal, waits up to 100 seconds for the
+  // page to load. until.elementLocated means "don't continue until this element exists on the page."
   const driver = await new Builder()
     .forBrowser("firefox")
     .build();
@@ -33,12 +64,19 @@ async function searchTrafficRecord({ cpr, plateno, company, regTypeID = "01" }, 
     await driver.get("https://services.bahrain.bh/wps/portal/gdt_en");
     await driver.wait(until.elementLocated(By.className("row-fluid")), 100000);
 
+    // Step 2 — Click Vehicle Registration Renewal
+    // Finds the link by its title attribute and clicks it via JavaScript.
+    // executeScript is used instead of .click() because some portals block Selenium's native click —
+    // a JS click bypasses that restriction.
     await driver.wait(until.elementLocated(By.css('[title="Vehicle Registration Renewal"]')), 100000);
     const renewalLink = await driver.findElement(By.css('[title="Vehicle Registration Renewal"]'));
     await driver.executeScript("arguments[0].click();", renewalLink);
     console.log("[Scraper] Clicked Vehicle Registration Renewal");
 
-    // Identity Type
+    // Step 3 — Fill Identity Type (CR for company, CPR for personal)
+    // Sets the dropdown to CR (company registration) or CPR (personal ID) then manually fires a
+    // change event — just setting .value doesn't trigger the page's JS listeners that show/hide
+    // the subsequent fields.
     await driver.wait(until.elementLocated(By.css('[title="Owner Identity Type"]')), 100000);
     const identityTypeSelect = await driver.findElement(By.css('[title="Owner Identity Type"]'));
     await driver.executeScript(`arguments[0].value = '${company ? "CR" : "CPR"}';`, identityTypeSelect);
@@ -47,7 +85,10 @@ async function searchTrafficRecord({ cpr, plateno, company, regTypeID = "01" }, 
     console.log(`[Scraper] Identity type: ${company ? "CR" : "CPR"}`);
     await timeout(2000);
 
-    // Registration Type
+    // Step 4 — Select Registration Type by text content (not by index or value)
+    // The portal uses different internal values across environments, but the option text is always
+    // consistent. REG_KEYWORD_MAP maps our regTypeID codes to keywords in the option text,
+    // then we loop options and select the first one whose text includes the keyword.
     await driver.wait(until.elementLocated(By.css('[title="Registration Type"]')), 100000);
     const regTypeSelect = await driver.findElement(By.css('[title="Registration Type"]'));
 
@@ -83,11 +124,13 @@ async function searchTrafficRecord({ cpr, plateno, company, regTypeID = "01" }, 
     console.log(`[Scraper] Reg type selected: "${selected}" (keyword: ${keyword})`);
     await timeout(500);
 
-    // Vehicle Number
+    // Step 5 — Fill plate number and identity number
+    // Sets field values directly via JS rather than typing character by character — faster and reliable.
+    // xcomment: Company vehicles use the "Commercial Registration Number" field;
+    //           personal vehicles use "Identity Number" — different title attributes, same idea.
     const vehicleInput = await driver.findElement(By.css('[title="Vehicle Number"]'));
     await driver.executeScript(`arguments[0].value = '${plateno}';`, vehicleInput);
 
-    // CPR / CR
     if (company) {
       const crInput = await driver.findElement(By.css('[title="Commercial Registration Number"]'));
       await driver.executeScript(`arguments[0].value = '${cpr}';`, crInput);
@@ -99,7 +142,9 @@ async function searchTrafficRecord({ cpr, plateno, company, regTypeID = "01" }, 
 
     await timeout(2000);
 
-    // Continue
+    // Step 6 — Click Continue → then Details to open the vehicle data modal
+    // Scrolls to the button before clicking to avoid any overlap issues, then waits for the
+    // Details button to appear (portal renders it after server-side validation passes).
     await driver.wait(until.elementLocated(By.css('[value*="Continue"]')), 10000);
     const continueBtn = await driver.findElement(By.css('[value*="Continue"]'));
     await driver.executeScript("window.scrollTo(0, document.body.scrollHeight);");
@@ -109,14 +154,16 @@ async function searchTrafficRecord({ cpr, plateno, company, regTypeID = "01" }, 
     await driver.executeScript("arguments[0].click();", continueBtn);
     console.log("[Scraper] Clicked Continue");
 
-    // Details
     await driver.wait(until.elementLocated(By.css('[title="Details"]')), 100000);
     const detailsBtn = await driver.findElement(By.css('[title="Details"]'));
     await driver.executeScript("arguments[0].click();", detailsBtn);
     console.log("[Scraper] Clicked Details");
 
-    await timeout(3000);
+    await timeout(3000); // wait for modal to load
 
+    // Step 7 — Scrape the vehicle data from the modal
+    // Runs JS inside the browser to grab all .form-control-block.block-full elements and return
+    // their text — car model, chassis, plate, registration type, insurance, etc.
     await driver.wait(until.elementLocated(By.className("form-control-block block-full")), 100000);
     await driver.wait(until.elementLocated(By.className("modal-body")), 100000);
 
@@ -131,6 +178,9 @@ async function searchTrafficRecord({ cpr, plateno, company, regTypeID = "01" }, 
 
     console.log(`[Scraper] Found ${elementData.length} elements`);
 
+    // Index offset logic — the portal sometimes renders an extra <input> at position 0 depending
+    // on vehicle type. If element[0] contains "<input>" HTML → shift all indices by 2.
+    // Otherwise use base indices. Discovered by testing — one of the trickiest parts of the scraper.
     let ocrSmart = null;
     if (elementData && elementData.length > 5) {
       const firstElement = elementData[0].innerHTML;
@@ -166,19 +216,30 @@ async function searchTrafficRecord({ cpr, plateno, company, regTypeID = "01" }, 
       console.warn("[Scraper] Not enough elements:", elementData?.length);
     }
 
+    // xcomment: Expand the modal's max-height before taking the screenshot so all vehicle data
+    // rows are visible in the image — the default CSS clips the modal at a shorter height.
     await driver.executeScript(`
       const elements = document.getElementsByClassName('modal-body');
       if (elements.length > 0) elements[0].style.maxHeight = '900px';
     `);
 
+    // Step 8 — Take screenshot and upload to Firebase Storage
+    // takeAndUpload() captures a base64 PNG, saves it to results.screenshotData (for Vue),
+    // uploads the PNG to Firebase Storage, and pushes the signed URL to results.screenshots.
     await timeout(1000);
     await takeAndUpload(driver, bucket, `traffic_renewal${timestamp}.png`, "trafficWebsiteRenewalAttFromGenie", results);
 
-    // Navigate to Vehicles Record Enquiry and download the PDF
+    // Step 9 — Vehicles Record Enquiry PDF (second form)
+    // Navigates back to the GDT portal and fills a second form using the plate number and chassis
+    // number scraped above. See scrapeVehicleEnquiryPdf() below.
     const chassisNo = results.vehicleData?.chassisNo;
     const plateNo   = results.vehicleData?.plateNo || plateno;
     await scrapeVehicleEnquiryPdf(driver, bucket, plateNo, chassisNo, regTypeID, timestamp, results);
 
+    // Step 10 — Save to Firestore traffic_records and return
+    // Document ID is plateno_timestamp so it's unique and identifiable.
+    // Returns results to server/index.js which sends it to Vue. Vue converts the base64
+    // screenshots and PDF into File objects and adds them to the email attachments.
     if (db) {
       const docRef = db.collection("traffic_records").doc(`${plateno}_${timestamp}`);
       await docRef.set({
@@ -199,7 +260,19 @@ async function searchTrafficRecord({ cpr, plateno, company, regTypeID = "01" }, 
   }
 }
 
-// ── Vehicles Record Enquiry — fills the second form, fetches the report PDF ──
+// ── scrapeVehicleEnquiryPdf() ─────────────────────────────────────────────────────────────────────
+// Step 9 detail — fills the second GDT form "Vehicles Record Enquiry" using plate + chassis scraped
+// in step 7, clicks Export, then fetches the PDF report via fetch() inside the browser session.
+//
+// The PDF is fetched inside the browser (not from Node.js) because the URL only works in the context
+// of the authenticated browser session — Node.js cannot access it directly.
+// PDF bytes are returned as an array → converted to Buffer → uploaded to Firebase Storage →
+// converted to base64 → sent back to Vue.
+//
+// xcomment: This form also has a Registration Type dropdown (same REG_KEYWORD_MAP logic as step 4).
+// xcomment: The Export button finder uses a broad search across title/alt/innerText and skips hidden
+//           elements because JSF portlet buttons often carry ViewState in their value attribute,
+//           making value-based selectors unreliable. Falls back to any visible submit in the form.
 async function scrapeVehicleEnquiryPdf(driver, bucket, plateNo, chassisNo, regTypeID, timestamp, results) {
   if (!plateNo || !chassisNo) {
     console.warn("[Scraper] Vehicle enquiry PDF skipped — missing plateNo or chassisNo");
@@ -222,7 +295,7 @@ async function scrapeVehicleEnquiryPdf(driver, bucket, plateNo, chassisNo, regTy
     await driver.wait(until.elementLocated(By.css('[id*="vehicleNo"]')), 30000);
     await timeout(1000);
 
-    // Registration Type dropdown
+    // Registration Type dropdown (same keyword-match approach as the first form)
     const regSelect = await driver.findElement(By.css('[id*="cprvehicletypelist"]'));
     const REG_KEYWORD_MAP = {
       "01": "PRIVATE",  "02": "PVT GOODS",    "03": "PVT D/C",
@@ -330,10 +403,12 @@ async function scrapeVehicleEnquiryPdf(driver, bucket, plateNo, chassisNo, regTy
       await driver.executeScript("arguments[0].scrollIntoView({block:'center'});", exportBtnEl);
       await timeout(500);
       await driver.executeScript("arguments[0].click();", exportBtnEl);
-      await timeout(2000);
+      await timeout(5000); // wait for the PDF to be generated server-side before fetching
     }
 
-    // Fetch the PDF report — URL serves the PDF generated by clicking Export to PDF above
+    // Fetch the PDF report — URL serves the PDF generated by clicking Export above.
+    // fetch() runs inside the browser (not Node.js) because the endpoint is session-authenticated;
+    // returns bytes as a plain array so Selenium can pass them back to Node.js.
     let pdfBuffer = null;
     try {
       const pdfBytes = await driver.executeScript(function() {
@@ -351,7 +426,7 @@ async function scrapeVehicleEnquiryPdf(driver, bucket, plateNo, chassisNo, regTy
       console.warn("[Scraper] PDF URL fetch failed:", e.message);
     }
 
-    // Upload to Firebase Storage
+    // Upload PDF to Firebase Storage — signed URL set to never expire (year 2800)
     if (pdfBuffer) {
       try {
         const file = bucket.file(`trafficWebsiteAttFromGenie/traffic_record${timestamp}.pdf`);
@@ -369,15 +444,20 @@ async function scrapeVehicleEnquiryPdf(driver, bucket, plateNo, chassisNo, regTy
   }
 }
 
+// ── takeAndUpload() ───────────────────────────────────────────────────────────────────────────────
+// Takes a screenshot → saves base64 to results.screenshotData (for Vue) →
+// uploads PNG to Firebase Storage → gets a signed URL that never expires (year 2800) →
+// pushes URL to results.screenshots.
+// Non-fatal: upload errors are caught so a Firebase hiccup doesn't abort the whole scrape.
 async function takeAndUpload(driver, bucket, fileName, folder, results) {
-  const screenshot = await driver.takeScreenshot();
-  results.screenshotData.push(screenshot);
+  const screenshot = await driver.takeScreenshot(); // returns base64 PNG
+  results.screenshotData.push(screenshot);          // saved for sending back to Vue
   try {
     const buffer = Buffer.from(screenshot, "base64");
     const file   = bucket.file(`${folder}/${fileName}`);
     await file.save(buffer, { contentType: "image/png" });
     const [url] = await file.getSignedUrl({ action: "read", expires: "03-02-2800" });
-    results.screenshots.push(url);
+    results.screenshots.push(url);                  // Firebase Storage URL saved
     console.log(`[Scraper] Screenshot uploaded: ${fileName}`);
   } catch (err) {
     console.error("[Scraper] Screenshot Firebase upload failed (non-fatal):", err.message);

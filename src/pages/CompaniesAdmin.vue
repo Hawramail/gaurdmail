@@ -39,7 +39,9 @@
             >
               {{ email }}
             </q-chip>
-            <span v-if="!props.row.to.length" class="text-grey-5 text-caption">—</span>
+            <span v-if="!props.row.to.length" class="text-grey-5 text-caption"
+              >—</span
+            >
           </q-td>
         </template>
 
@@ -56,18 +58,28 @@
             >
               {{ email }}
             </q-chip>
-            <span v-if="!props.row.cc.length" class="text-grey-5 text-caption">—</span>
+            <span v-if="!props.row.cc.length" class="text-grey-5 text-caption"
+              >—</span
+            >
           </q-td>
         </template>
 
         <template #body-cell-actions="props">
           <q-td :props="props">
             <q-btn
-              flat dense size="sm" icon="edit" color="primary"
+              flat
+              dense
+              size="sm"
+              icon="edit"
+              color="primary"
               @click="openEdit(props.row)"
             />
             <q-btn
-              flat dense size="sm" icon="delete" color="negative"
+              flat
+              dense
+              size="sm"
+              icon="delete"
+              color="negative"
               @click="deleteCompany(props.row.id)"
               class="q-ml-xs"
             />
@@ -169,6 +181,7 @@
 </template>
 
 <script>
+import { logSiemEvent } from "src/composables/useSeim";
 import { useCompanies } from "src/composables/useCompanies";
 
 export default {
@@ -188,7 +201,13 @@ export default {
       ccInput: "",
       form: { name: "", to: [], cc: [] },
       columns: [
-        { name: "name", label: "Company", field: "name", align: "left", sortable: true },
+        {
+          name: "name",
+          label: "Company",
+          field: "name",
+          align: "left",
+          sortable: true,
+        },
         { name: "to", label: "TO recipients", field: "to", align: "left" },
         { name: "cc", label: "CC recipients", field: "cc", align: "left" },
         { name: "actions", label: "", field: "actions", align: "right" },
@@ -228,7 +247,10 @@ export default {
       this.addEmail("cc");
 
       if (!this.form.name.trim()) {
-        this.$q.notify({ type: "warning", message: "Company name is required" });
+        this.$q.notify({
+          type: "warning",
+          message: "Company name is required",
+        });
         return;
       }
       try {
@@ -238,23 +260,57 @@ export default {
         } else {
           await this.addCompany({ ...this.form });
         }
+        await logSiemEvent(
+          "ADMIN_CONFIG_CHANGED",
+          localStorage.getItem("siem_user_email") || "staff",
+          {
+            action: this.editingId ? "updated" : "added",
+            company: this.form.name,
+          },
+          "medium",
+        );
+        console.log('SIEM event logged') 
+
         this.dialog = false;
-        this.$q.notify({ type: "positive", message: "Company saved", icon: "check" });
+        this.$q.notify({
+          type: "positive",
+          message: "Company saved",
+          icon: "check",
+        });
       } catch (err) {
-        this.$q.notify({ type: "negative", message: "Failed to save: " + err.message });
+        this.$q.notify({
+          type: "negative",
+          message: "Failed to save: " + err.message,
+        });
       }
     },
 
     async deleteCompany(id) {
       const confirmed = window.confirm(
-        "Are you sure? This will remove the email config for this company."
+        "Are you sure? This will remove the email config for this company.",
       );
       if (!confirmed) return;
       try {
         await this.removeCompany(id);
-        this.$q.notify({ type: "negative", message: "Company deleted", icon: "delete" });
+        await logSiemEvent(
+          "ADMIN_CONFIG_CHANGED",
+          localStorage.getItem("siem_user_email") || "staff",
+          {
+            action: "deleted",
+            company: id,
+          },
+          "medium",
+        );
+        this.$q.notify({
+          type: "negative",
+          message: "Company deleted",
+          icon: "delete",
+        });
       } catch (err) {
-        this.$q.notify({ type: "negative", message: "Failed to delete: " + err.message });
+        this.$q.notify({
+          type: "negative",
+          message: "Failed to delete: " + err.message,
+        });
       }
     },
   },

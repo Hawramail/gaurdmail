@@ -144,7 +144,6 @@
                            programmatically click it via triggerFileInput(). -->
                       <input type="file" accept=".jpg,.jpeg,.png,.pdf" class="upload-input"
                         :ref="el => setInputRef(doc.id, side, el)"
-                        <!-- onFileChange() is the main upload handler (see STEP 5) -->
                         @change="e => { activeDocId = doc.id; onFileChange(e, side) }" />
 
                       <!-- Empty state: prompt to add a photo -->

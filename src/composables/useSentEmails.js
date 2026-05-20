@@ -1,12 +1,8 @@
 // src/composables/useSentEmails.js
-
-import { collection, addDoc, serverTimestamp, query, orderBy, onSnapshot } from 'firebase/firestore'
-import { ref } from 'vue'
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
 import { db } from 'src/firebase/config'
 
 export function useSentEmails () {
-  const sentEmails   = ref([])
-  let   unsubscribe  = null
 
   // ── Save a sent email record ─────────────────────────────────────────────
   //
@@ -63,23 +59,5 @@ export function useSentEmails () {
     await addDoc(collection(db, 'sent_emails'), record)
   }
 
-  // ── Real-time listener for the history page ──────────────────────────────
-  function startListening () {
-    const q  = query(collection(db, 'sent_emails'), orderBy('sentAt', 'desc'))
-
-    unsubscribe = onSnapshot(q, (snapshot) => {
-      sentEmails.value = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        // Convert Firestore Timestamp → JS Date for easy display
-        sentAtDate: doc.data().sentAt?.toDate?.() || null,
-      }))
-    })
-  }
-
-  function stopListening () {
-    if (unsubscribe) { unsubscribe(); unsubscribe = null }
-  }
-
-  return { saveSentEmail, sentEmails, startListening, stopListening }
+  return { saveSentEmail }
 }

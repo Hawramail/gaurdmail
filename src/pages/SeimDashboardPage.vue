@@ -179,16 +179,6 @@
               no-caps class="sim-full-btn q-mt-sm"
               :loading="simulating" @click="handleSimulation"
             />
-            <q-btn
-              outline color="warning" label="Clear Demo Data" icon="cleaning_services"
-              no-caps class="sim-full-btn q-mt-xs"
-              :loading="clearing" @click="handleClear"
-            />
-            <q-btn
-              outline color="negative" label="Reset — Wipe All Data" icon="delete_sweep"
-              no-caps class="sim-full-btn q-mt-xs"
-              :loading="resetting" @click="handleReset"
-            />
           </q-card-section>
 
         </q-card>
